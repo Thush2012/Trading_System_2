@@ -1,10 +1,7 @@
 import os
+import asyncio
 import logging
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
-
+from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
@@ -28,13 +25,29 @@ tracker = TradeTracker()
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+async def handle_ping(request):
+    """Health check endpoint to keep cloud nodes (Render/VPS) active."""
+    return web.Response(text="Dual Market Trade Engine is Running 24/7!")
+
+async def start_web_server():
+    """Runs a lightweight HTTP server bound to the hosting port."""
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info(f"Health check web server running on port {port}")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Logs unexpected exceptions from polling or tasks."""
     log.error(f"Telegram error encountered: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background job: checks active trade targets and scans for new setups."""
+    """Background cycle: checks active trade targets and scans for new setups."""
     try:
-        # 1. Check existing open trades for TP/SL hits
+        # 1. Evaluate open trades against live prices for TP/SL hits
         log.info("Checking active trades against live price targets...")
         trade_updates = tracker.evaluate_active_trades()
         for update_event in trade_updates:
@@ -43,9 +56,9 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 text=update_event["msg"],
                 parse_mode="Markdown"
             )
-            log.info(f"Published trade outcome update for {update_event['symbol']}: {update_event['type']}")
+            log.info(f"Published outcome update for {update_event['symbol']}: {update_event['type']}")
 
-        # 2. Run standard 15-minute market scanner
+        # 2. Run automated 15-minute market scanner
         log.info("Running automated 15-minute background market scan...")
         report = await global_scanner.scan_all(bypass_cooldown=False)
         if not report.empty:
@@ -56,7 +69,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     text=msg,
                     parse_mode="Markdown"
                 )
-                # Automatically register into tracker
+                # Register new setup in active outcome tracker
                 ticker = global_scanner.market_map.get(row["symbol"].replace("USDT", "USD"), {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(row.to_dict(), ticker)
@@ -66,13 +79,15 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         log.error(f"Background evaluation error: {e}")
 
 async def post_init_hook(application):
-    log.info("Master bot connected. Dispatching boot alert...")
+    """Initializes the background web server and sends a boot confirmation."""
+    await start_web_server()
+
     startup_text = (
         "💎 **Dual Market Trade Engine Online**\n\n"
-        "• Mode: Standalone Direct Alert Terminal\n"
+        "• Deployment: Active 24/7 Cloud/Local Mode\n"
         "• Auto Scan & TP/SL Tracker: Active (15m Intervals)\n"
         "• Outcome Alerts: Automatic TP1, TP2, TP3 & SL Tracking\n"
-        "• Listener: Ready for commands"
+        "• Commands: Listening for user interactions"
     )
     try:
         await application.bot.send_message(
@@ -85,9 +100,10 @@ async def post_init_hook(application):
 
 def main():
     log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (TRACKER ON)     ")
+    log.info("        DUAL MARKET TRADE ENGINE (CLOUD READY)    ")
     log.info("==================================================")
 
+    # Build Application
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -95,6 +111,7 @@ def main():
         .build()
     )
 
+    # Register handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -103,6 +120,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
     app.add_error_handler(error_handler)
 
+    # Schedule 15-minute background scans using built-in JobQueue
     if app.job_queue:
         app.job_queue.run_repeating(
             scheduled_scan_job,
@@ -111,7 +129,7 @@ def main():
         )
         log.info("15-minute background scan & tracker loop scheduled.")
 
-    log.info("Master Engine listening for updates...")
+    log.info("Master Engine polling for updates...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
