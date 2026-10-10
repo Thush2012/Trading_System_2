@@ -1,210 +1,196 @@
-import asyncio
-import pandas as pd
+import logging
 import numpy as np
+import pandas as pd
 import yfinance as yf
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from core.logger import setup_system_logger
 
-log = setup_system_logger("HighAccuracyScanner")
+log = setup_system_logger("ForexScanner")
 
-def get_market_session(utc_hour: int) -> str:
-    """Determines the active global institutional session and liquidity status."""
-    if 7 <= utc_hour < 12:
-        return "🇬🇧 London Session (High Volume)"
-    elif 12 <= utc_hour < 16:
-        return "🔥 London / NY Overlap (Peak Liquidity)"
-    elif 16 <= utc_hour < 21:
-        return "🇺🇸 New York Session (Expansion)"
-    else:
-        return "🌏 Asian Session (Consolidation / Crypto Focus)"
+# Dedicated Forex watchlist (Major and primary cross pairs with tight spreads)
+FOREX_MARKETS = {
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5},
+    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5},
+    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5},
+    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5},
+    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3},
+}
 
-class LightweightScanner:
-    """Scanner featuring 200 EMA macro filter, ADX momentum gate, session timing, and setup classification."""
-
-    FOREX_PAIRS = {
-        "EURUSD": "EURUSD=X",
-        "GBPUSD": "GBPUSD=X",
-        "USDJPY": "USDJPY=X"
-    }
-
-    CRYPTO_PAIRS = {
-        "BTCUSD": "BTC-USD",
-        "ETHUSD": "ETH-USD",
-        "SOLUSD": "SOL-USD"
-    }
-
+class Scanner:
     def __init__(self):
-        self.market_map = {}
-        for sym, ticker in self.FOREX_PAIRS.items():
-            self.market_map[sym] = {"ticker": ticker, "market": "FOREX", "icon": "💱", "sym": sym}
-        for sym, ticker in self.CRYPTO_PAIRS.items():
-            self.market_map[sym] = {
-                "ticker": ticker,
-                "market": "CRYPTO",
-                "icon": "🪙",
-                "sym": sym.replace("USD", "USDT")
-            }
+        self.market_map = FOREX_MARKETS
+        self.cooldowns = {}  # {symbol: timestamp}
+        self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
+
+    def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        high = df["High"]
+        low = df["Low"]
+        close = df["Close"].shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - close).abs(),
+            (low - close).abs()
+        ], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean()
+
+    def calculate_rsi(self, series: pd.Series, period: int = 14) -> pd.Series:
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / (loss + 1e-9)
+        return 100 - (100 / (1 + rs))
+
+    def calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        high = df["High"]
+        low = df["Low"]
+        close = df["Close"]
         
-        self.last_alerts = {}
-
-    def is_cooling_down(self, sym: str, cooldown_hours: float = 2.0) -> bool:
-        """Enforces a 2-hour anti-spam cooldown per symbol."""
-        now = datetime.now(timezone.utc)
-        if sym in self.last_alerts:
-            if now - self.last_alerts[sym] < timedelta(hours=cooldown_hours):
-                return True
-        return False
-
-    def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "7d") -> pd.DataFrame:
-        """Fetches OHLCV data using public Yahoo Finance streams."""
-        try:
-            df = yf.download(ticker, period=period, interval=interval, progress=False)
-            if df.empty:
-                return pd.DataFrame()
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df.rename(columns={
-                "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"
-            })
-            return df[["open", "high", "low", "close", "volume"]].dropna()
-        except Exception as e:
-            log.error(f"Error fetching {ticker}: {e}")
-            return pd.DataFrame()
-
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculates EMA 20/50/200, RSI 14, ATR 14, and ADX 14."""
-        df = df.copy()
-
-        # Multi-timeframe EMAs
-        df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
-        df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
-
-        # RSI (14)
-        delta = df["close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.rolling(window=14, min_periods=14).mean()
-        avg_loss = loss.rolling(window=14, min_periods=14).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["rsi"] = 100 - (100 / (1 + rs))
-
-        # True Range & ATR (14)
-        hl = df["high"] - df["low"]
-        hc = (df["high"] - df["close"].shift()).abs()
-        lc = (df["low"] - df["close"].shift()).abs()
-        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        df["atr"] = tr.rolling(window=14, min_periods=14).mean()
-
-        # ADX (14)
-        plus_dm = df["high"].diff()
-        minus_dm = -df["low"].diff()
+        plus_dm = high.diff()
+        minus_dm = low.diff().abs() * -1
+        
         plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
         minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+        
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs()
+        ], axis=1).max(axis=1)
+        
+        atr = tr.rolling(window=period).mean()
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=period).mean() / (atr + 1e-9))
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=period).mean() / (atr + 1e-9))
+        
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+        return dx.rolling(window=period).mean()
 
-        tr_smooth = tr.rolling(window=14, min_periods=14).mean()
-        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=14, min_periods=14).mean() / tr_smooth)
-        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=14, min_periods=14).mean() / tr_smooth)
-        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
-        df["adx"] = dx.rolling(window=14, min_periods=14).mean()
+    def fetch_data(self, ticker: str) -> pd.DataFrame:
+        try:
+            df = yf.download(ticker, period="5d", interval="15m", progress=False)
+            if df.empty or len(df) < 210:
+                return pd.DataFrame()
 
-        return df
+            # Flatten multi-index if returned by yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            return df
+        except Exception as e:
+            log.error(f"Error fetching data for {ticker}: {e}")
+            return pd.DataFrame()
+
+    def evaluate_pair(self, symbol: str, meta: dict) -> dict:
+        ticker = meta["ticker"]
+        df = self.fetch_data(ticker)
+        if df.empty:
+            return None
+
+        # Technical Indicators
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+        df["RSI"] = self.calculate_rsi(df["Close"], period=14)
+        df["ADX"] = self.calculate_adx(df, period=14)
+        df["ATR"] = self.calculate_atr(df, period=14)
+
+        current = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        price = float(current["Close"])
+        ema200 = float(current["EMA200"])
+        ema50 = float(current["EMA50"])
+        ema20 = float(current["EMA20"])
+        rsi = float(current["RSI"])
+        adx = float(current["ADX"])
+        atr = float(current["ATR"])
+
+        pip_size = meta["pip_size"]
+        digits = meta["digits"]
+
+        # Strategy Gates:
+        # 1. ADX >= 20 confirms active trend momentum
+        # 2. Bullish: Price & EMA20/50 > EMA200, RSI between 45 and 68
+        # 3. Bearish: Price & EMA20/50 < EMA200, RSI between 32 and 55
+
+        if adx < 20 or np.isnan(atr) or atr == 0:
+            return None
+
+        action = None
+        setup_type = "TREND_CONTINUATION"
+
+        if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68:
+            if current["Close"] > current["Open"]:  # Bullish trigger candle
+                action = "BUY / LONG"
+
+        elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55:
+            if current["Close"] < current["Open"]:  # Bearish trigger candle
+                action = "SELL / SHORT"
+
+        if not action:
+            return None
+
+        # Dynamic Volatility-Based Targets
+        sl_distance = 1.5 * atr
+        tp1_distance = 1.0 * atr
+        tp2_distance = 1.8 * atr
+        tp3_distance = 2.6 * atr
+
+        entry_low = round(min(price, float(current["Open"])), digits)
+        entry_high = round(max(price, float(current["Open"])), digits)
+
+        if "BUY" in action:
+            sl = round(price - sl_distance, digits)
+            tp1 = round(price + tp1_distance, digits)
+            tp2 = round(price + tp2_distance, digits)
+            tp3 = round(price + tp3_distance, digits)
+        else:
+            sl = round(price + sl_distance, digits)
+            tp1 = round(price - tp1_distance, digits)
+            tp2 = round(price - tp2_distance, digits)
+            tp3 = round(price - tp3_distance, digits)
+
+        sl_pips = round(sl_distance / pip_size, 1)
+
+        return {
+            "symbol": symbol,
+            "action": action,
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "current_price": round(price, digits),
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "sl_pips": sl_pips,
+            "rsi": round(rsi, 1),
+            "adx": round(adx, 1),
+            "setup": setup_type,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        }
 
     async def scan_all(self, bypass_cooldown: bool = False) -> pd.DataFrame:
-        """Executes full market scan across Forex and Crypto."""
         results = []
-        loop = asyncio.get_event_loop()
-        now_utc = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).timestamp()
 
-        for sym, meta in self.market_map.items():
-            if not bypass_cooldown and self.is_cooling_down(sym):
-                log.info(f"Skipping {sym} (Cooling down)")
-                continue
+        for symbol, meta in self.market_map.items():
+            # Respect individual pair cooldowns unless manually forced via /scan
+            if not bypass_cooldown:
+                last_time = self.cooldowns.get(symbol, 0)
+                if now - last_time < self.cooldown_period_sec:
+                    continue
 
-            # Skip Forex over weekends
-            if meta["market"] == "FOREX" and now_utc.weekday() in [5, 6]:
-                continue
+            signal = self.evaluate_pair(symbol, meta)
+            if signal:
+                self.cooldowns[symbol] = now
+                results.append(signal)
 
-            df = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "7d")
+        if results:
+            log.info(f"Scan complete. Discovered {len(results)} Forex setups.")
+            return pd.DataFrame(results)
 
-            if df.empty or len(df) < 205:
-                log.warning(f"Insufficient candles for {sym} ({len(df)}/205 required for 200 EMA)")
-                continue
-
-            df = self.calculate_indicators(df)
-            latest = df.iloc[-1]
-            prev = df.iloc[-2]
-
-            close = float(latest["close"])
-            ema20 = float(latest["ema20"])
-            ema50 = float(latest["ema50"])
-            ema200 = float(latest["ema200"])
-            rsi = float(latest["rsi"]) if not np.isnan(latest["rsi"]) else 50.0
-            atr = float(latest["atr"]) if not np.isnan(latest["atr"]) else (close * 0.005)
-            adx = float(latest["adx"]) if not np.isnan(latest["adx"]) else 20.0
-
-            action = None
-            entry_buffer = 0.20 * atr
-
-            # High-Accuracy BUY: Above 200 EMA + 20 EMA > 50 EMA + Trend Strength (ADX >= 20) + RSI momentum
-            if close > ema200 and ema20 > ema50 and adx >= 20 and (50 <= rsi <= 68) and close > prev["close"]:
-                action = "BUY / LONG"
-                entry_low = close
-                entry_high = close + entry_buffer
-                sl = close - (1.5 * atr)
-                tp1 = close + (1.0 * atr)
-                tp2 = close + (1.8 * atr)
-                tp3 = close + (2.6 * atr)
-
-            # High-Accuracy SELL: Below 200 EMA + 20 EMA < 50 EMA + Trend Strength (ADX >= 20) + RSI momentum
-            elif close < ema200 and ema20 < ema50 and adx >= 20 and (32 <= rsi <= 50) and close < prev["close"]:
-                action = "SELL / SHORT"
-                entry_high = close
-                entry_low = close - entry_buffer
-                sl = close + (1.5 * atr)
-                tp1 = close - (1.0 * atr)
-                tp2 = close - (1.8 * atr)
-                tp3 = close - (2.6 * atr)
-
-            log.info(f"[{sym}] Close: {close:.4f} | 200EMA: {ema200:.4f} | ADX: {adx:.1f} | RSI: {rsi:.1f} -> {action or 'NEUTRAL'}")
-
-            if action:
-                decimals = 5 if meta["market"] == "FOREX" else 2
-                risk_pct = round((abs(close - sl) / close) * 100, 2)
-
-                # Classify setup type & expected duration
-                if adx >= 28:
-                    setup_type = "⚡ QUICK MOMENTUM SCALP"
-                    duration_est = "15m – 45m"
-                else:
-                    setup_type = "📈 TREND EXPANSION RUNNER"
-                    duration_est = "1h – 4h"
-
-                session_info = get_market_session(now_utc.hour)
-
-                results.append({
-                    "symbol": meta["sym"],
-                    "asset_class": meta["market"],
-                    "icon": meta["icon"],
-                    "action": action,
-                    "setup_type": setup_type,
-                    "duration": duration_est,
-                    "session": session_info,
-                    "entry_low": round(entry_low, decimals),
-                    "entry_high": round(entry_high, decimals),
-                    "sl": round(sl, decimals),
-                    "tp1": round(tp1, decimals),
-                    "tp2": round(tp2, decimals),
-                    "tp3": round(tp3, decimals),
-                    "risk_pct": risk_pct,
-                    "rsi": round(rsi, 1),
-                    "adx": round(adx, 1),
-                    "time": now_utc.strftime("%H:%M UTC")
-                })
-
-                self.last_alerts[sym] = now_utc
-
-        return pd.DataFrame(results)
-
-    async def close(self):
-        pass
+        log.info("Scan complete. No high-probability Forex setups identified.")
+        return pd.DataFrame()
