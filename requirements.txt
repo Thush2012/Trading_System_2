@@ -3,4 +3,6 @@ pandas
 numpy
 yfinance
 python-dotenv
-python-telegram-bot[job-queue]
+python-telegram-bot
+APScheduler==3.10.4
+pytz
