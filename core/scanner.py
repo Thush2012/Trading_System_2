@@ -7,7 +7,7 @@ from core.logger import setup_system_logger
 
 log = setup_system_logger("ForexScanner")
 
-# Dedicated Forex watchlist (Major and primary cross pairs with tight spreads)
+# Dedicated Forex watchlist (Liquid majors and crosses with tight spreads)
 FOREX_MARKETS = {
     "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5},
     "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5},
@@ -20,7 +20,7 @@ FOREX_MARKETS = {
     "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3},
 }
 
-class Scanner:
+class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}  # {symbol: timestamp}
@@ -74,7 +74,6 @@ class Scanner:
             if df.empty or len(df) < 210:
                 return pd.DataFrame()
 
-            # Flatten multi-index if returned by yfinance
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
@@ -89,7 +88,7 @@ class Scanner:
         if df.empty:
             return None
 
-        # Technical Indicators
+        # Indicator Calculations
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -98,8 +97,6 @@ class Scanner:
         df["ATR"] = self.calculate_atr(df, period=14)
 
         current = df.iloc[-1]
-        prev = df.iloc[-2]
-        
         price = float(current["Close"])
         ema200 = float(current["EMA200"])
         ema50 = float(current["EMA50"])
@@ -111,11 +108,8 @@ class Scanner:
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
-        # Strategy Gates:
-        # 1. ADX >= 20 confirms active trend momentum
-        # 2. Bullish: Price & EMA20/50 > EMA200, RSI between 45 and 68
-        # 3. Bearish: Price & EMA20/50 < EMA200, RSI between 32 and 55
-
+        # Trend & Momentum Rules:
+        # ADX >= 20 confirms active trend momentum
         if adx < 20 or np.isnan(atr) or atr == 0:
             return None
 
@@ -123,17 +117,17 @@ class Scanner:
         setup_type = "TREND_CONTINUATION"
 
         if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68:
-            if current["Close"] > current["Open"]:  # Bullish trigger candle
+            if current["Close"] > current["Open"]:
                 action = "BUY / LONG"
 
         elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55:
-            if current["Close"] < current["Open"]:  # Bearish trigger candle
+            if current["Close"] < current["Open"]:
                 action = "SELL / SHORT"
 
         if not action:
             return None
 
-        # Dynamic Volatility-Based Targets
+        # Volatility-Based Stop Loss and 3-Tier Targets
         sl_distance = 1.5 * atr
         tp1_distance = 1.0 * atr
         tp2_distance = 1.8 * atr
@@ -177,7 +171,6 @@ class Scanner:
         now = datetime.now(timezone.utc).timestamp()
 
         for symbol, meta in self.market_map.items():
-            # Respect individual pair cooldowns unless manually forced via /scan
             if not bypass_cooldown:
                 last_time = self.cooldowns.get(symbol, 0)
                 if now - last_time < self.cooldown_period_sec:
@@ -194,3 +187,10 @@ class Scanner:
 
         log.info("Scan complete. No high-probability Forex setups identified.")
         return pd.DataFrame()
+
+    async def close(self):
+        """Cleanup handler if needed by external async loops."""
+        pass
+
+# Aliases to guarantee compatibility with all imports
+Scanner = LightweightScanner
