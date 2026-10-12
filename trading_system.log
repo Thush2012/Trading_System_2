@@ -2675,3 +2675,30 @@ AttributeError: 'RiskManager' object has no attribute 'evaluate_forex_stake'
 [2026-10-09 18:24:11] [INFO] (HighAccuracyScanner) Skipping BTCUSD (Cooling down)
 [2026-10-09 18:24:11] [INFO] (HighAccuracyScanner) [ETHUSD] Close: 2493.0400 | 200EMA: 2529.1590 | ADX: 22.5 | RSI: 37.2 -> NEUTRAL
 [2026-10-09 18:24:12] [INFO] (HighAccuracyScanner) [SOLUSD] Close: 110.1600 | 200EMA: 112.6419 | ADX: 20.2 | RSI: 45.9 -> NEUTRAL
+[2026-10-12 09:00:22] [INFO] (MasterEngine) ==================================================
+[2026-10-12 09:00:22] [INFO] (MasterEngine)         DUAL MARKET TRADE ENGINE (CLOUD READY)    
+[2026-10-12 09:00:22] [INFO] (MasterEngine) ==================================================
+[2026-10-12 09:00:24] [INFO] (MasterEngine) 15-minute background scan & tracker loop scheduled.
+[2026-10-12 09:00:24] [INFO] (MasterEngine) Master Engine polling for updates...
+[2026-10-12 09:00:26] [INFO] (MasterEngine) Health check web server running on port 8080
+[2026-10-12 09:00:31] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:00:37] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:00:44] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:00:50] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:00:54] [INFO] (MasterEngine) Checking active trades against live price targets...
+[2026-10-12 09:00:57] [INFO] (MasterEngine) Published outcome update for BTCUSDT: TP2
+[2026-10-12 09:00:58] [INFO] (MasterEngine) Published outcome update for BTCUSDT: TP1
+[2026-10-12 09:00:58] [INFO] (MasterEngine) Running automated 15-minute background market scan...
+[2026-10-12 09:01:20] [INFO] (ForexScanner) Scan complete. Discovered 4 Forex setups.
+[2026-10-12 09:01:20] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:01:21] [INFO] (TradeTracker) Registered new active trade tracking for AUDUSD
+[2026-10-12 09:01:21] [INFO] (MasterEngine) Signal for AUDUSD delivered and registered in tracker.
+[2026-10-12 09:01:22] [INFO] (TradeTracker) Registered new active trade tracking for EURGBP
+[2026-10-12 09:01:22] [INFO] (MasterEngine) Signal for EURGBP delivered and registered in tracker.
+[2026-10-12 09:01:22] [INFO] (TradeTracker) Registered new active trade tracking for EURJPY
+[2026-10-12 09:01:22] [INFO] (MasterEngine) Signal for EURJPY delivered and registered in tracker.
+[2026-10-12 09:01:23] [INFO] (TradeTracker) Registered new active trade tracking for GBPJPY
+[2026-10-12 09:01:23] [INFO] (MasterEngine) Signal for GBPJPY delivered and registered in tracker.
+[2026-10-12 09:01:30] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:01:42] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-12 09:01:58] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
