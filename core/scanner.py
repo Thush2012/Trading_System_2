@@ -7,6 +7,7 @@ from core.logger import setup_system_logger
 
 log = setup_system_logger("ForexScanner")
 
+# Dedicated Forex watchlist (Liquid majors and crosses with tight spreads)
 FOREX_MARKETS = {
     "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5},
     "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5},
@@ -23,7 +24,7 @@ class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_period_sec = 1800
+        self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         high = df["High"]
@@ -84,6 +85,7 @@ class LightweightScanner:
         if df.empty:
             return None
 
+        # Indicator Calculations
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -103,34 +105,45 @@ class LightweightScanner:
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
+        # Trend & Momentum Rules:
         if adx < 20 or np.isnan(atr) or atr == 0:
             return None
 
         action = None
-        if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68 and current["Close"] > current["Open"]:
-            action = "BUY"
-        elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55 and current["Close"] < current["Open"]:
-            action = "SELL"
+        setup_type = "TREND_CONTINUATION"
+
+        if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68:
+            if current["Close"] > current["Open"]:
+                action = "BUY / LONG"
+
+        elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55:
+            if current["Close"] < current["Open"]:
+                action = "SELL / SHORT"
 
         if not action:
             return None
 
-        # 1.5x ATR for Stop Loss and 1.5x ATR for Single Take Profit (1:1 Risk/Reward)
+        # Volatility-Based Stop Loss and 3-Tier Targets
         sl_distance = 1.5 * atr
-        tp_distance = 1.5 * atr
+        tp1_distance = 1.0 * atr
+        tp2_distance = 1.8 * atr
+        tp3_distance = 2.6 * atr
 
         entry_low = round(min(price, float(current["Open"])), digits)
         entry_high = round(max(price, float(current["Open"])), digits)
 
-        if action == "BUY":
+        if "BUY" in action:
             sl = round(price - sl_distance, digits)
-            tp = round(price + tp_distance, digits)
+            tp1 = round(price + tp1_distance, digits)
+            tp2 = round(price + tp2_distance, digits)
+            tp3 = round(price + tp3_distance, digits)
         else:
             sl = round(price + sl_distance, digits)
-            tp = round(price - tp_distance, digits)
+            tp1 = round(price - tp1_distance, digits)
+            tp2 = round(price - tp2_distance, digits)
+            tp3 = round(price - tp3_distance, digits)
 
         sl_pips = round(sl_distance / pip_size, 1)
-        tp_pips = round(tp_distance / pip_size, 1)
 
         return {
             "symbol": symbol,
@@ -139,12 +152,13 @@ class LightweightScanner:
             "entry_high": entry_high,
             "current_price": round(price, digits),
             "sl": sl,
-            "tp": tp,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
             "sl_pips": sl_pips,
-            "tp_pips": tp_pips,
             "rsi": round(rsi, 1),
             "adx": round(adx, 1),
-            "setup": "TREND_CONTINUATION",
+            "setup": setup_type,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 

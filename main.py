@@ -4,9 +4,9 @@ import logging
 from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from supabase import create_client, Client
 from core.config import Config
 from core.logger import setup_system_logger
+from core.tracker import TradeTracker
 from telegram_bot import (
     cmd_start,
     cmd_scan,
@@ -20,25 +20,17 @@ from telegram_bot import (
 
 log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
-
-# Initialize Supabase client
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        log.info("Supabase client initialized successfully.")
-    except Exception as e:
-        log.error(f"Failed to connect to Supabase: {e}")
+tracker = TradeTracker()
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def handle_ping(request):
+    """Health check endpoint to keep Render active."""
     return web.Response(text="Dual Market Trade Engine is Running 24/7!")
 
 async def start_web_server():
+    """Runs a lightweight HTTP server bound to the hosting port."""
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
@@ -51,29 +43,22 @@ async def start_web_server():
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram error encountered: {context.error}")
 
-def push_signal_to_supabase(signal: dict):
-    if not supabase:
-        log.warning("Supabase client not active. Skipping DB push.")
-        return
-    try:
-        data = {
-            "symbol": signal["symbol"],
-            "action": signal["action"],
-            "entry_price": float(signal["current_price"]),
-            "sl": float(signal["sl"]),
-            "tp": float(signal["tp"]),
-            "sl_pips": float(signal["sl_pips"]),
-            "tp_pips": float(signal["tp_pips"]),
-            "status": "PENDING"
-        }
-        supabase.table("trade_signals").insert(data).execute()
-        log.info(f"Pushed {signal['symbol']} {signal['action']} to Supabase queue.")
-    except Exception as e:
-        log.error(f"Supabase push error: {e}")
-
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
+    """Background cycle: checks active trade targets and scans for new setups."""
     try:
-        log.info("Running automated 15-minute background Forex market scan...")
+        # 1. Evaluate open trades against live prices for TP/SL hits
+        log.info("Checking active trades against live price targets...")
+        trade_updates = tracker.evaluate_active_trades()
+        for update_event in trade_updates:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=update_event["msg"],
+                parse_mode="Markdown"
+            )
+            log.info(f"Published outcome update for {update_event['symbol']}: {update_event['type']}")
+
+        # 2. Run automated 15-minute background market scanner
+        log.info("Running automated 15-minute background market scan...")
         report = await global_scanner.scan_all(bypass_cooldown=False)
         if not report.empty:
             for _, row in report.iterrows():
@@ -84,19 +69,25 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     text=msg,
                     parse_mode="Markdown"
                 )
-                # Enqueue into Supabase for local executor
-                push_signal_to_supabase(signal_dict)
+                # Register new setup in outcome tracker
+                ticker = global_scanner.market_map.get(row["symbol"], {}).get("ticker", "")
+                if ticker:
+                    tracker.register_trade(signal_dict, ticker)
+                log.info(f"Signal for {row['symbol']} delivered and registered in tracker.")
+
     except Exception as e:
         log.error(f"Background evaluation error: {e}")
 
 async def post_init_hook(application):
     await start_web_server()
+
     startup_text = (
-        "💎 *Forex Trade Engine Online*\n\n"
-        "• Deployment: Active 24/7 Cloud (Render)\n"
-        "• Queue: Supabase Active\n"
-        "• Model: Single Take Profit (1.5 ATR)\n"
-        "• Auto Scan: Active (15m Intervals)"
+        "💎 **Dual Market Trade Engine Online**\n\n"
+        "• Deployment: Active 24/7 Cloud/Local Mode\n"
+        "• Focus: 100% Forex Major & Cross Pairs\n"
+        "• Auto Scan & TP/SL Tracker: Active (15m Intervals)\n"
+        "• Outcome Alerts: Automatic TP1, TP2, TP3 & SL Tracking\n"
+        "• Commands: Listening for user interactions"
     )
     try:
         await application.bot.send_message(
@@ -108,6 +99,10 @@ async def post_init_hook(application):
         log.error(f"Could not send boot alert: {ex}")
 
 def main():
+    log.info("==================================================")
+    log.info("        DUAL MARKET TRADE ENGINE (CLOUD READY)    ")
+    log.info("==================================================")
+
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -126,10 +121,10 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(
             scheduled_scan_job,
-            interval=900,
-            first=30
+            interval=900,  # 15 minutes
+            first=30       # Starts checking 30s after boot
         )
-        log.info("15-minute background scan loop scheduled.")
+        log.info("15-minute background scan & tracker loop scheduled.")
 
     log.info("Master Engine polling for updates...")
     app.run_polling(drop_pending_updates=True)
