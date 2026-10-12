@@ -7,7 +7,6 @@ from core.logger import setup_system_logger
 
 log = setup_system_logger("ForexScanner")
 
-# Dedicated Forex watchlist (Liquid majors and crosses with tight spreads)
 FOREX_MARKETS = {
     "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5},
     "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5},
@@ -23,8 +22,8 @@ FOREX_MARKETS = {
 class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
-        self.cooldowns = {}  # {symbol: timestamp}
-        self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
+        self.cooldowns = {}
+        self.cooldown_period_sec = 1800
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         high = df["High"]
@@ -51,7 +50,6 @@ class LightweightScanner:
         
         plus_dm = high.diff()
         minus_dm = low.diff().abs() * -1
-        
         plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
         minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
         
@@ -73,10 +71,8 @@ class LightweightScanner:
             df = yf.download(ticker, period="5d", interval="15m", progress=False)
             if df.empty or len(df) < 210:
                 return pd.DataFrame()
-
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-
             return df
         except Exception as e:
             log.error(f"Error fetching data for {ticker}: {e}")
@@ -88,7 +84,6 @@ class LightweightScanner:
         if df.empty:
             return None
 
-        # Indicator Calculations
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -108,46 +103,34 @@ class LightweightScanner:
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
-        # Trend & Momentum Rules:
-        # ADX >= 20 confirms active trend momentum
         if adx < 20 or np.isnan(atr) or atr == 0:
             return None
 
         action = None
-        setup_type = "TREND_CONTINUATION"
-
-        if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68:
-            if current["Close"] > current["Open"]:
-                action = "BUY / LONG"
-
-        elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55:
-            if current["Close"] < current["Open"]:
-                action = "SELL / SHORT"
+        if price > ema200 and ema20 > ema50 and 45 <= rsi <= 68 and current["Close"] > current["Open"]:
+            action = "BUY"
+        elif price < ema200 and ema20 < ema50 and 32 <= rsi <= 55 and current["Close"] < current["Open"]:
+            action = "SELL"
 
         if not action:
             return None
 
-        # Volatility-Based Stop Loss and 3-Tier Targets
+        # 1.5x ATR for Stop Loss and 1.5x ATR for Single Take Profit (1:1 Risk/Reward)
         sl_distance = 1.5 * atr
-        tp1_distance = 1.0 * atr
-        tp2_distance = 1.8 * atr
-        tp3_distance = 2.6 * atr
+        tp_distance = 1.5 * atr
 
         entry_low = round(min(price, float(current["Open"])), digits)
         entry_high = round(max(price, float(current["Open"])), digits)
 
-        if "BUY" in action:
+        if action == "BUY":
             sl = round(price - sl_distance, digits)
-            tp1 = round(price + tp1_distance, digits)
-            tp2 = round(price + tp2_distance, digits)
-            tp3 = round(price + tp3_distance, digits)
+            tp = round(price + tp_distance, digits)
         else:
             sl = round(price + sl_distance, digits)
-            tp1 = round(price - tp1_distance, digits)
-            tp2 = round(price - tp2_distance, digits)
-            tp3 = round(price - tp3_distance, digits)
+            tp = round(price - tp_distance, digits)
 
         sl_pips = round(sl_distance / pip_size, 1)
+        tp_pips = round(tp_distance / pip_size, 1)
 
         return {
             "symbol": symbol,
@@ -156,13 +139,12 @@ class LightweightScanner:
             "entry_high": entry_high,
             "current_price": round(price, digits),
             "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
+            "tp": tp,
             "sl_pips": sl_pips,
+            "tp_pips": tp_pips,
             "rsi": round(rsi, 1),
             "adx": round(adx, 1),
-            "setup": setup_type,
+            "setup": "TREND_CONTINUATION",
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 
@@ -181,16 +163,9 @@ class LightweightScanner:
                 self.cooldowns[symbol] = now
                 results.append(signal)
 
-        if results:
-            log.info(f"Scan complete. Discovered {len(results)} Forex setups.")
-            return pd.DataFrame(results)
-
-        log.info("Scan complete. No high-probability Forex setups identified.")
-        return pd.DataFrame()
+        return pd.DataFrame(results) if results else pd.DataFrame()
 
     async def close(self):
-        """Cleanup handler if needed by external async loops."""
         pass
 
-# Aliases to guarantee compatibility with all imports
 Scanner = LightweightScanner
