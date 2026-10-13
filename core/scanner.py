@@ -3,21 +3,22 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
+import pytz
 from core.logger import setup_system_logger
 
 log = setup_system_logger("ForexScanner")
 
-# Dedicated Forex watchlist (Liquid majors and crosses with tight spreads)
+# Dedicated Forex watchlist
 FOREX_MARKETS = {
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "session": "LONDON_NY"},
-    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5, "session": "LONDON_NY"},
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "session": "ALL"},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "session": "ALL"},
-    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5, "session": "LONDON_NY"},
-    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5, "session": "LONDON_NY"},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "session": "LONDON_NY"},
-    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3, "session": "ALL"},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "session": "LONDON_NY"},
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5},
+    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5},
+    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5},
+    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5},
+    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3},
 }
 
 class LightweightScanner:
@@ -25,16 +26,19 @@ class LightweightScanner:
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
         self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
-        self.min_target_pips = 12.0      # Reject micro-swings eaten by spread
+        self.min_target_pips = 12.0
+        
+        # ACTIVE TRADING WINDOW (Sri Lanka Time / Asia/Colombo)
+        # 13.5 = 1:30 PM | 21.5 = 9:30 PM
+        self.tz = pytz.timezone("Asia/Colombo")
+        self.window_start_hour = 13.5  # 1:30 PM SLT
+        self.window_end_hour = 21.5    # 9:30 PM SLT
 
-    def is_session_active(self, session_type: str) -> bool:
-        """Filters European/Pound pairs to institutional London & NY sessions."""
-        if session_type == "ALL":
-            return True
-        now_utc = datetime.now(timezone.utc)
-        current_hour = now_utc.hour + (now_utc.minute / 60.0)
-        # London Open to NY Mid-Day: 07:00 UTC to 17:00 UTC (12:30 PM - 10:30 PM SLT)
-        return 7.0 <= current_hour <= 17.0
+    def is_within_trading_window(self) -> bool:
+        """Checks if current Sri Lanka time is within the designated trading window."""
+        now_slt = datetime.now(self.tz)
+        current_decimal_hour = now_slt.hour + (now_slt.minute / 60.0)
+        return self.window_start_hour <= current_decimal_hour <= self.window_end_hour
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         high = df["High"]
@@ -90,10 +94,6 @@ class LightweightScanner:
             return pd.DataFrame()
 
     def evaluate_pair(self, symbol: str, meta: dict) -> dict:
-        # Rule 1: Session timing filter
-        if not self.is_session_active(meta.get("session", "ALL")):
-            return None
-
         ticker = meta["ticker"]
 
         # Fetch M15 chart
@@ -138,31 +138,26 @@ class LightweightScanner:
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
-        # Rule 2: Minimum momentum & rising slope
+        # Momentum filter (ADX >= 25 with rising slope)
         if adx_curr < 25 or adx_curr <= adx_prev or np.isnan(atr) or atr == 0:
             return None
 
         action = None
 
-        # Rule 3: Dual MTF Alignment + Pullback to EMA20 Confirmation
-        # Bullish: H1 & M15 above 200 EMA + EMA20 > EMA50 + pullback touch near EMA20
+        # Dual MTF Alignment + Pullback to EMA20 Confirmation
         if h1_close > h1_ema200 and price > m15_ema200 and ema20 > ema50:
             if 48 <= rsi <= 65 and price > open_price:
-                # Candle low must be within 0.6x ATR of the 20 EMA (value entry)
                 if abs(low_price - ema20) <= (0.6 * atr) or low_price <= ema20:
                     action = "BUY / LONG"
 
-        # Bearish: H1 & M15 below 200 EMA + EMA20 < EMA50 + pullback touch near EMA20
         elif h1_close < h1_ema200 and price < m15_ema200 and ema20 < ema50:
             if 35 <= rsi <= 52 and price < open_price:
-                # Candle high must be within 0.6x ATR of the 20 EMA (value entry)
                 if abs(high_price - ema20) <= (0.6 * atr) or high_price >= ema20:
                     action = "SELL / SHORT"
 
         if not action:
             return None
 
-        # Rule 4: Dynamic target calculation with hard pip floor
         sl_distance = 1.5 * atr
         tp1_distance = 1.0 * atr
         tp2_distance = 1.8 * atr
@@ -170,7 +165,7 @@ class LightweightScanner:
 
         tp1_pips = round(tp1_distance / pip_size, 1)
 
-        # Rule 5: Reject micro-swings (target must clear at least 12 pips)
+        # Minimum pip filter
         if tp1_pips < self.min_target_pips:
             return None
 
@@ -206,7 +201,12 @@ class LightweightScanner:
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 
-    async def scan_all(self, bypass_cooldown: bool = False) -> pd.DataFrame:
+    async def scan_all(self, bypass_cooldown: bool = False, enforce_window: bool = True) -> pd.DataFrame:
+        # Check specific trading window
+        if enforce_window and not self.is_within_trading_window():
+            log.info("Outside of scheduled trading window (1:30 PM - 9:30 PM SLT). Scanner sleeping.")
+            return pd.DataFrame()
+
         results = []
         now = datetime.now(timezone.utc).timestamp()
 
