@@ -22,24 +22,21 @@ log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 tracker = TradeTracker()
 
-MAX_CONCURRENT_OPEN_TRADES = 1
+MAX_CONCURRENT_OPEN_TRADES = 2
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def get_active_trades_count(tr: TradeTracker) -> int:
-    """Safely inspects active trade count across different tracker structures."""
     for attr in ("active_trades", "trades", "tracked_trades", "open_trades"):
         val = getattr(tr, attr, None)
-        if isinstance(val, dict):
-            return len(val)
-        if isinstance(val, list):
+        if isinstance(val, (dict, list)):
             return len(val)
     return 0
 
 async def handle_ping(request):
-    feed_status = "Live MT5 Connected" if getattr(global_scanner, "mt5_initialized", False) else "Web Fallback Active"
-    return web.Response(text=f"Dual Market Trade Engine is Running 24/7! ({feed_status})")
+    feed = "Live MT5" if getattr(global_scanner, "mt5_initialized", False) else "Web Engine"
+    return web.Response(text=f"Multi-Timeframe Engine Online (Feed: {feed})")
 
 async def start_web_server():
     app = web.Application()
@@ -49,15 +46,14 @@ async def start_web_server():
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    log.info(f"Health check web server running on port {port}")
+    log.info(f"Health check server active on port {port}")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    log.error(f"Telegram error encountered: {context.error}")
+    log.error(f"Telegram handler error: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        # 1. Evaluate open trades against live prices for TP/SL hits
-        log.info("Checking active trades against live price targets...")
+        # 1. Evaluate open trades for TP/SL hits
         trade_updates = tracker.evaluate_active_trades()
         for update_event in trade_updates:
             await context.bot.send_message(
@@ -65,20 +61,15 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 text=update_event["msg"],
                 parse_mode="Markdown"
             )
-            log.info(f"Published outcome update for {update_event['symbol']}: {update_event['type']}")
 
-        # 2. Portfolio Exposure Check: Block new signals if trade is already open
-        active_count = get_active_trades_count(tracker)
-        if active_count >= MAX_CONCURRENT_OPEN_TRADES:
-            log.info(f"Active trade limit reached ({active_count}/{MAX_CONCURRENT_OPEN_TRADES}). Skipping scan to protect capital.")
+        # 2. Maximum open position limit
+        if get_active_trades_count(tracker) >= MAX_CONCURRENT_OPEN_TRADES:
             return
 
-        # 3. Run automated 15-minute background market scan
-        log.info("Running automated 15-minute background market scan...")
+        # 3. Multi-timeframe scan cycle
         report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
         if not report.empty:
             for _, row in report.iterrows():
-                # Re-check open trade limit before firing
                 if get_active_trades_count(tracker) >= MAX_CONCURRENT_OPEN_TRADES:
                     break
                 signal_dict = row.to_dict()
@@ -91,23 +82,20 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 ticker = global_scanner.market_map.get(row["symbol"], {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(signal_dict, ticker)
-                log.info(f"Signal for {row['symbol']} delivered and registered in tracker.")
+                log.info(f"Dispatched {row['symbol']} [{row.get('timeframe')}] signal to Telegram.")
 
     except Exception as e:
-        log.error(f"Background evaluation error: {e}")
+        log.error(f"Scheduled scan job error: {e}")
 
 async def post_init_hook(application):
     await start_web_server()
-
-    feed_mode = "Direct MT5 Live Feed" if getattr(global_scanner, "mt5_initialized", False) else "Cloud Standalone Mode"
+    feed_mode = "Direct MT5 Feed" if getattr(global_scanner, "mt5_initialized", False) else "Cloud Standalone"
     startup_text = (
-        "💎 **Dual Market Trade Engine Online**\n\n"
+        "💎 *Multi-Timeframe Forex Engine Online*\n\n"
         f"• Status: {feed_mode}\n"
-        "• Focus: 100% Forex Major & Cross Pairs\n"
-        "• Active Window: 1:30 PM – 9:30 PM SLT\n"
-        "• Risk Rule: Maximum 1 Active Trade\n"
-        "• Auto Scan & TP/SL Tracker: Active (15m Intervals)\n"
-        "• Commands: Listening for user interactions"
+        "• Horizons: 5m (Scalp), 15m (Intraday), 1h (Macro Trend)\n"
+        "• Schedule: 5-minute automated checks (24/5)\n"
+        "• Target Model: Multi-tier TP1, TP2, TP3 with Breakeven Latch"
     )
     try:
         await application.bot.send_message(
@@ -116,13 +104,10 @@ async def post_init_hook(application):
             parse_mode="Markdown"
         )
     except Exception as ex:
-        log.error(f"Could not send boot alert: {ex}")
+        log.error(f"Boot notification failure: {ex}")
 
 def main():
-    log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (PRO STABLE)     ")
-    log.info("==================================================")
-
+    log.info("Starting Multi-Timeframe Forex Trade Engine...")
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -139,14 +124,15 @@ def main():
     app.add_error_handler(error_handler)
 
     if app.job_queue:
+        # Run background scanner every 5 minutes (300 seconds)
         app.job_queue.run_repeating(
             scheduled_scan_job,
-            interval=900,  # 15 minutes
-            first=30
+            interval=300,
+            first=20
         )
-        log.info("15-minute background scan & tracker loop scheduled.")
+        log.info("5-minute multi-timeframe background job queue initialized.")
 
-    log.info("Master Engine polling for updates...")
+    log.info("Polling Telegram updates...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
