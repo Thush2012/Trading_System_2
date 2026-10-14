@@ -22,15 +22,26 @@ log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 tracker = TradeTracker()
 
+MAX_CONCURRENT_OPEN_TRADES = 1
+
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+def get_active_trades_count(tr: TradeTracker) -> int:
+    """Safely inspects active trade count across different tracker structures."""
+    for attr in ("active_trades", "trades", "tracked_trades", "open_trades"):
+        val = getattr(tr, attr, None)
+        if isinstance(val, dict):
+            return len(val)
+        if isinstance(val, list):
+            return len(val)
+    return 0
+
 async def handle_ping(request):
-    """Health check endpoint to keep Render active."""
-    return web.Response(text="Dual Market Trade Engine is Running 24/7!")
+    feed_status = "Live MT5 Connected" if getattr(global_scanner, "mt5_initialized", False) else "Web Fallback Active"
+    return web.Response(text=f"Dual Market Trade Engine is Running 24/7! ({feed_status})")
 
 async def start_web_server():
-    """Runs a lightweight HTTP server bound to the hosting port."""
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
@@ -44,7 +55,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram error encountered: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background cycle: checks active trade targets and scans for new setups."""
     try:
         # 1. Evaluate open trades against live prices for TP/SL hits
         log.info("Checking active trades against live price targets...")
@@ -57,11 +67,20 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
             )
             log.info(f"Published outcome update for {update_event['symbol']}: {update_event['type']}")
 
-        # 2. Run automated 15-minute background market scanner
+        # 2. Portfolio Exposure Check: Block new signals if trade is already open
+        active_count = get_active_trades_count(tracker)
+        if active_count >= MAX_CONCURRENT_OPEN_TRADES:
+            log.info(f"Active trade limit reached ({active_count}/{MAX_CONCURRENT_OPEN_TRADES}). Skipping scan to protect capital.")
+            return
+
+        # 3. Run automated 15-minute background market scan
         log.info("Running automated 15-minute background market scan...")
-        report = await global_scanner.scan_all(bypass_cooldown=False)
+        report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
         if not report.empty:
             for _, row in report.iterrows():
+                # Re-check open trade limit before firing
+                if get_active_trades_count(tracker) >= MAX_CONCURRENT_OPEN_TRADES:
+                    break
                 signal_dict = row.to_dict()
                 msg = format_signal_message(signal_dict)
                 await context.bot.send_message(
@@ -69,7 +88,6 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     text=msg,
                     parse_mode="Markdown"
                 )
-                # Register new setup in outcome tracker
                 ticker = global_scanner.market_map.get(row["symbol"], {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(signal_dict, ticker)
@@ -81,12 +99,14 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
 async def post_init_hook(application):
     await start_web_server()
 
+    feed_mode = "Direct MT5 Live Feed" if getattr(global_scanner, "mt5_initialized", False) else "Cloud Standalone Mode"
     startup_text = (
         "💎 **Dual Market Trade Engine Online**\n\n"
-        "• Deployment: Active 24/7 Cloud/Local Mode\n"
+        f"• Status: {feed_mode}\n"
         "• Focus: 100% Forex Major & Cross Pairs\n"
+        "• Active Window: 1:30 PM – 9:30 PM SLT\n"
+        "• Risk Rule: Maximum 1 Active Trade\n"
         "• Auto Scan & TP/SL Tracker: Active (15m Intervals)\n"
-        "• Outcome Alerts: Automatic TP1, TP2, TP3 & SL Tracking\n"
         "• Commands: Listening for user interactions"
     )
     try:
@@ -100,7 +120,7 @@ async def post_init_hook(application):
 
 def main():
     log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (CLOUD READY)    ")
+    log.info("        DUAL MARKET TRADE ENGINE (PRO STABLE)     ")
     log.info("==================================================")
 
     app = (
@@ -122,7 +142,7 @@ def main():
         app.job_queue.run_repeating(
             scheduled_scan_job,
             interval=900,  # 15 minutes
-            first=30       # Starts checking 30s after boot
+            first=30
         )
         log.info("15-minute background scan & tracker loop scheduled.")
 

@@ -2702,3 +2702,30 @@ AttributeError: 'RiskManager' object has no attribute 'evaluate_forex_stake'
 [2026-10-12 09:01:30] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-12 09:01:42] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-12 09:01:58] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:33:08] [INFO] (ForexScanner) Live MT5 Terminal connected. Direct institutional data feed enabled.
+[2026-10-14 07:33:09] [INFO] (MasterEngine) ==================================================
+[2026-10-14 07:33:09] [INFO] (MasterEngine)         DUAL MARKET TRADE ENGINE (PRO STABLE)     
+[2026-10-14 07:33:09] [INFO] (MasterEngine) ==================================================
+[2026-10-14 07:33:23] [INFO] (MasterEngine) 15-minute background scan & tracker loop scheduled.
+[2026-10-14 07:33:23] [INFO] (MasterEngine) Master Engine polling for updates...
+[2026-10-14 07:33:29] [INFO] (MasterEngine) Health check web server running on port 8080
+[2026-10-14 07:33:35] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:33:41] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:33:48] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:33:52] [INFO] (MasterEngine) Checking active trades against live price targets...
+[2026-10-14 07:33:59] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:33:59] [INFO] (MasterEngine) Published outcome update for AUDUSD: TP3
+[2026-10-14 07:34:00] [INFO] (MasterEngine) Published outcome update for EURGBP: TP3
+[2026-10-14 07:34:00] [INFO] (MasterEngine) Published outcome update for EURJPY: TP3
+[2026-10-14 07:34:00] [INFO] (MasterEngine) Published outcome update for GBPJPY: TP3
+[2026-10-14 07:34:00] [ERROR] (MasterEngine) Background evaluation error: 'TradeTracker' object has no attribute 'active_trades'
+[2026-10-14 07:34:08] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:34:21] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:34:41] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:35:03] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:35:33] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:36:08] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:36:43] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:37:17] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:37:52] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-14 07:38:27] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
