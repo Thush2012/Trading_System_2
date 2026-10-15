@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
 from core.logger import setup_system_logger
+from core.loss_memory import LossMemoryEngine
 
 try:
     import MetaTrader5 as mt5
@@ -13,9 +14,9 @@ except ImportError:
     MT5_AVAILABLE = False
 
 log = setup_system_logger("ForexScanner")
+memory_engine = LossMemoryEngine()
 
-# HIGH-EXPECTANCY PAIRS ONLY
-# Removed EURJPY, USDCAD, and USDCHF based on week 41 MT5 report analysis
+# Proven high-expectancy pairs
 FOREX_MARKETS = {
     "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 1.8},
     "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
@@ -28,8 +29,8 @@ class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_period_sec = 2400  # 40-minute cooldown to prevent immediate revenge entries
-        self.min_target_pips = 16.0      # Enforce healthy minimum profit size
+        self.cooldown_period_sec = 2400
+        self.min_target_pips = 16.0
         self.mt5_initialized = False
         self.init_mt5_terminal()
 
@@ -43,7 +44,6 @@ class LightweightScanner:
             self.mt5_initialized = False
 
     def is_within_trading_window(self) -> bool:
-        """24/5 continuous trading, avoiding weekend spreads."""
         return datetime.now(timezone.utc).weekday() < 5
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -173,11 +173,10 @@ class LightweightScanner:
         adx_prev = float(prev["ADX"])
         atr = float(curr["ATR"])
 
-        # Stricter momentum threshold: require sustained trend
+        # Stricter momentum threshold
         if adx_curr < 25.0 or adx_curr < adx_prev or np.isnan(atr) or atr == 0:
             return None
 
-        # Candlestick Anatomy
         body_size = abs(price - open_price)
         candle_range = max(high_price - low_price, 1e-9)
         lower_wick = min(open_price, price) - low_price
@@ -202,8 +201,13 @@ class LightweightScanner:
         if not action:
             return None
 
-        # 3. Mathematical Edge: 1 : 1.33 Risk-to-Reward
-        # SL = 1.2 * ATR (Tighter risk) | TP = 1.6 * ATR (Larger payoff)
+        # 3. Check Loss Memory (Prevents repeating recent failed setups)
+        allowed, reason = memory_engine.is_setup_allowed(symbol, action, adx_curr)
+        if not allowed:
+            log.info(f"Filtered {symbol} {action} by Memory Engine: {reason}")
+            return None
+
+        # 4. Asymmetric Risk-to-Reward: SL = 1.2 * ATR | TP = 1.6 * ATR
         sl_distance = 1.2 * atr
         tp_distance = 1.6 * atr
 
@@ -242,6 +246,7 @@ class LightweightScanner:
             "spread_pips": current_spread,
             "rsi": round(rsi, 1),
             "adx": round(adx_curr, 1),
+            "atr": atr,
             "source": source_name,
             "setup": "H1_M15_ASYMMETRIC_REJECTION",
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

@@ -1,200 +1,146 @@
-import os
-import json
+import logging
 import yfinance as yf
-import pandas as pd
 from datetime import datetime, timezone
 from core.logger import setup_system_logger
+from core.loss_memory import LossMemoryEngine
+
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
 
 log = setup_system_logger("TradeTracker")
-
-ACTIVE_FILE = os.path.join("data", "active_trades.json")
-HISTORY_FILE = os.path.join("data", "trade_history.json")
+memory_engine = LossMemoryEngine()
 
 class TradeTracker:
     def __init__(self):
-        os.makedirs("data", exist_ok=True)
-        if not os.path.exists(ACTIVE_FILE):
-            with open(ACTIVE_FILE, "w") as f:
-                json.dump([], f)
-        if not os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, "w") as f:
-                json.dump([], f)
+        self.active_trades = {}
 
-    def _load_trades(self, file_path):
-        try:
-            with open(file_path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
+    def register_trade(self, signal_dict: dict, ticker: str):
+        symbol = signal_dict["symbol"]
+        action = signal_dict["action"]
+        entry = float(signal_dict.get("current_price", signal_dict.get("entry_low", 0.0)))
+        sl = float(signal_dict["sl"])
+        tp1 = float(signal_dict.get("tp1", signal_dict.get("tp", 0.0)))
+        tp2 = float(signal_dict.get("tp2", tp1))
+        tp3 = float(signal_dict.get("tp3", tp2))
 
-    def _save_trades(self, file_path, data):
-        with open(file_path, "w") as f:
-            json.dump(data, f, indent=4)
-
-    def register_trade(self, row: dict, ticker: str):
-        """Saves a newly signaled trade for tracking."""
-        trades = self._load_trades(ACTIVE_FILE)
-        
-        # Avoid duplicate registration for the same symbol while active
-        for t in trades:
-            if t["symbol"] == row["symbol"] and t["status"] == "OPEN":
-                return
-
-        new_trade = {
-            "symbol": row["symbol"],
+        self.active_trades[symbol] = {
+            "symbol": symbol,
+            "action": action,
+            "entry_price": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
             "ticker": ticker,
-            "action": row["action"],
-            "entry": (row["entry_low"] + row["entry_high"]) / 2.0,
-            "sl": row["sl"],
-            "tp1": row["tp1"],
-            "tp2": row["tp2"],
-            "tp3": row["tp3"],
+            "adx": float(signal_dict.get("adx", 25.0)),
+            "atr": float(signal_dict.get("atr", 0.0010)),
             "tp1_hit": False,
             "tp2_hit": False,
-            "tp3_hit": False,
-            "status": "OPEN",
-            "opened_at": datetime.now(timezone.utc).isoformat()
+            "registered_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
-        trades.append(new_trade)
-        self._save_trades(ACTIVE_FILE, trades)
-        log.info(f"Registered new active trade tracking for {row['symbol']}")
+        log.info(f"Registered trade for tracking: {symbol} ({action}) @ {entry}")
+
+    def fetch_current_price(self, symbol: str, ticker: str) -> float:
+        if MT5_AVAILABLE:
+            try:
+                tick = mt5.symbol_info_tick(symbol)
+                if tick and tick.bid > 0:
+                    return float(tick.bid)
+            except Exception:
+                pass
+
+        try:
+            df = yf.download(ticker, period="1d", interval="1m", progress=False)
+            if not df.empty:
+                if isinstance(df.columns, object) and hasattr(df.columns, "get_level_values"):
+                    df.columns = df.columns.get_level_values(0)
+                return float(df["Close"].iloc[-1])
+        except Exception as e:
+            log.error(f"Price fetch error for {symbol}: {e}")
+        return None
 
     def evaluate_active_trades(self) -> list:
-        """Checks latest price action against active trade targets and returns update events."""
-        trades = self._load_trades(ACTIVE_FILE)
-        if not trades:
-            return []
+        outcome_events = []
+        completed_symbols = []
 
-        updates = []
-        remaining_trades = []
-        history = self._load_trades(HISTORY_FILE)
-
-        for trade in trades:
-            sym = trade["symbol"]
-            ticker = trade["ticker"]
-
-            try:
-                df = yf.download(ticker, period="1d", interval="15m", progress=False)
-                if df.empty:
-                    remaining_trades.append(trade)
-                    continue
-
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-
-                high = float(df["High"].iloc[-1])
-                low = float(df["Low"].iloc[-1])
-                close = float(df["Close"].iloc[-1])
-            except Exception as e:
-                log.error(f"Failed fetching candles for {sym}: {e}")
-                remaining_trades.append(trade)
+        for symbol, trade in list(self.active_trades.items()):
+            current_price = self.fetch_current_price(symbol, trade["ticker"])
+            if current_price is None:
                 continue
 
             action = trade["action"]
-            is_long = "BUY" in action or "LONG" in action
+            sl = trade["sl"]
+            tp1 = trade["tp1"]
+            tp2 = trade["tp2"]
+            tp3 = trade["tp3"]
+            is_buy = "BUY" in action
 
-            # --- LONG EVALUATION ---
-            if is_long:
-                # Check Stop Loss
-                if low <= trade["sl"]:
-                    trade["status"] = "CLOSED_SL"
-                    trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    history.append(trade)
-                    outcome = "BE_EXIT" if trade["tp1_hit"] else "STOP_LOSS"
-                    updates.append({
-                        "symbol": sym,
-                        "type": outcome,
-                        "msg": f"🛑 **STOP HIT: {sym}**\nPrice hit SL level `{trade['sl']}`. " +
-                               ("Trade closed at Breakeven." if trade["tp1_hit"] else "Trade closed.")
-                    })
-                    continue
+            # 1. Stop Loss Hit Event -> Log into Loss Memory Engine
+            sl_hit = (current_price <= sl) if is_buy else (current_price >= sl)
+            if sl_hit:
+                memory_engine.record_loss(
+                    symbol=symbol,
+                    action=action,
+                    adx=trade.get("adx", 25.0),
+                    atr=trade.get("atr", 0.0010)
+                )
 
-                # Check TP3
-                if high >= trade["tp3"] and not trade["tp3_hit"]:
-                    trade["tp1_hit"] = True
-                    trade["tp2_hit"] = True
-                    trade["tp3_hit"] = True
-                    trade["status"] = "CLOSED_TP3"
-                    trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    history.append(trade)
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP3",
-                        "msg": f"🏆 **FULL TP3 HIT: {sym}** 🎯\nPrice reached final target `{trade['tp3']}`! 100% position closed in maximum profit."
-                    })
-                    continue
+                msg = (
+                    f"🛑 *STOP LOSS HIT: {symbol}*\n"
+                    f"Action: *{action}*\n"
+                    f"Exit Price: `{current_price}` | SL: `{sl}`\n\n"
+                    "🧠 *Memory Engine:* Setup signature recorded.\n"
+                    f"🔒 *Lockout:* Banning repeated `{symbol} {action}` setups for 4 hours to protect capital."
+                )
+                outcome_events.append({"symbol": symbol, "type": "SL", "msg": msg})
+                completed_symbols.append(symbol)
+                continue
 
-                # Check TP2
-                if high >= trade["tp2"] and not trade["tp2_hit"]:
-                    trade["tp2_hit"] = True
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP2",
-                        "msg": f"🥈 **TP2 HIT: {sym}** 🔥\nPrice hit `{trade['tp2']}`! Lock in another 30% profit. Trail SL up to TP1."
-                    })
+            # 2. Target 3 Hit (Full Win)
+            tp3_hit = (current_price >= tp3) if is_buy else (current_price <= tp3)
+            if tp3_hit:
+                memory_engine.record_win(symbol)
+                msg = (
+                    f"🎉 *TARGET 3 HIT: {symbol}*\n"
+                    f"Action: *{action}*\n"
+                    f"Exit Price: `{current_price}` | Final TP: `{tp3}`\n"
+                    "Status: *Trade Fully Closed in Profit!*"
+                )
+                outcome_events.append({"symbol": symbol, "type": "TP3", "msg": msg})
+                completed_symbols.append(symbol)
+                continue
 
-                # Check TP1
-                if high >= trade["tp1"] and not trade["tp1_hit"]:
-                    trade["tp1_hit"] = True
-                    trade["sl"] = trade["entry"]  # Move SL to breakeven
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP1",
-                        "msg": f"🥇 **TP1 HIT: {sym}** 🚀\nPrice reached `{trade['tp1']}`! Closed 40% profit.\n👉 **Stop Loss moved to Entry (`{trade['entry']:.4f}`). Trade is now 100% Risk-Free!**"
-                    })
+            # 3. Target 2 Hit
+            tp2_hit = (current_price >= tp2) if is_buy else (current_price <= tp2)
+            if tp2_hit and not trade["tp2_hit"]:
+                trade["tp2_hit"] = True
+                msg = f"🎯🎯 *TARGET 2 HIT: {symbol}* @ `{current_price}` (Runner active)"
+                outcome_events.append({"symbol": symbol, "type": "TP2", "msg": msg})
 
-            # --- SHORT EVALUATION ---
-            else:
-                # Check Stop Loss
-                if high >= trade["sl"]:
-                    trade["status"] = "CLOSED_SL"
-                    trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    history.append(trade)
-                    outcome = "BE_EXIT" if trade["tp1_hit"] else "STOP_LOSS"
-                    updates.append({
-                        "symbol": sym,
-                        "type": outcome,
-                        "msg": f"🛑 **STOP HIT: {sym}**\nPrice hit SL level `{trade['sl']}`. " +
-                               ("Trade closed at Breakeven." if trade["tp1_hit"] else "Trade closed.")
-                    })
-                    continue
+            # 4. Target 1 Hit (Breakeven Latch)
+            tp1_hit = (current_price >= tp1) if is_buy else (current_price <= tp1)
+            if tp1_hit and not trade["tp1_hit"]:
+                trade["tp1_hit"] = True
+                memory_engine.record_win(symbol)
+                trade["sl"] = trade["entry_price"]
+                msg = (
+                    f"🎯 *TARGET 1 HIT: {symbol}* @ `{current_price}`\n"
+                    "🛡️ Stop Loss moved to Entry (Risk-Free Breakeven)."
+                )
+                outcome_events.append({"symbol": symbol, "type": "TP1", "msg": msg})
 
-                # Check TP3
-                if low <= trade["tp3"] and not trade["tp3_hit"]:
-                    trade["tp1_hit"] = True
-                    trade["tp2_hit"] = True
-                    trade["tp3_hit"] = True
-                    trade["status"] = "CLOSED_TP3"
-                    trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-                    history.append(trade)
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP3",
-                        "msg": f"🏆 **FULL TP3 HIT: {sym}** 🎯\nPrice dropped to final target `{trade['tp3']}`! 100% position closed in maximum profit."
-                    })
-                    continue
+        for sym in completed_symbols:
+            self.active_trades.pop(sym, None)
 
-                # Check TP2
-                if low <= trade["tp2"] and not trade["tp2_hit"]:
-                    trade["tp2_hit"] = True
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP2",
-                        "msg": f"🥈 **TP2 HIT: {sym}** 🔥\nPrice hit `{trade['tp2']}`! Lock in another 30% profit. Trail SL down to TP1."
-                    })
+        return outcome_events
 
-                # Check TP1
-                if low <= trade["tp1"] and not trade["tp1_hit"]:
-                    trade["tp1_hit"] = True
-                    trade["sl"] = trade["entry"]  # Move SL to breakeven
-                    updates.append({
-                        "symbol": sym,
-                        "type": "TP1",
-                        "msg": f"🥇 **TP1 HIT: {sym}** 🚀\nPrice reached `{trade['tp1']}`! Closed 40% profit.\n👉 **Stop Loss moved to Entry (`{trade['entry']:.4f}`). Trade is now 100% Risk-Free!**"
-                    })
+    @property
+    def trades(self):
+        return self.active_trades
 
-            remaining_trades.append(trade)
-
-        self._save_trades(ACTIVE_FILE, remaining_trades)
-        self._save_trades(HISTORY_FILE, history)
-        return updates
+    @property
+    def tracked_trades(self):
+        return self.active_trades

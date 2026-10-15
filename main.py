@@ -36,7 +36,7 @@ def get_active_trades_count(tr: TradeTracker) -> int:
 
 async def handle_ping(request):
     feed = "Live MT5" if getattr(global_scanner, "mt5_initialized", False) else "Web Engine"
-    return web.Response(text=f"Multi-Timeframe Engine Online (Feed: {feed})")
+    return web.Response(text=f"Precision Engine Online (Feed: {feed})")
 
 async def start_web_server():
     app = web.Application()
@@ -53,7 +53,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        # 1. Evaluate open trades for TP/SL hits
+        # 1. Evaluate open trades for TP/SL hits and trigger memory on SL
         trade_updates = tracker.evaluate_active_trades()
         for update_event in trade_updates:
             await context.bot.send_message(
@@ -66,7 +66,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         if get_active_trades_count(tracker) >= MAX_CONCURRENT_OPEN_TRADES:
             return
 
-        # 3. Multi-timeframe scan cycle
+        # 3. Scan market with memory filtering
         report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
         if not report.empty:
             for _, row in report.iterrows():
@@ -82,7 +82,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 ticker = global_scanner.market_map.get(row["symbol"], {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(signal_dict, ticker)
-                log.info(f"Dispatched {row['symbol']} [{row.get('timeframe')}] signal to Telegram.")
+                log.info(f"Dispatched {row['symbol']} signal to Telegram.")
 
     except Exception as e:
         log.error(f"Scheduled scan job error: {e}")
@@ -91,11 +91,12 @@ async def post_init_hook(application):
     await start_web_server()
     feed_mode = "Direct MT5 Feed" if getattr(global_scanner, "mt5_initialized", False) else "Cloud Standalone"
     startup_text = (
-        "💎 *Multi-Timeframe Forex Engine Online*\n\n"
-        f"• Status: {feed_mode}\n"
-        "• Horizons: 5m (Scalp), 15m (Intraday), 1h (Macro Trend)\n"
-        "• Schedule: 5-minute automated checks (24/5)\n"
-        "• Target Model: Multi-tier TP1, TP2, TP3 with Breakeven Latch"
+        "💎 *Precision Forex Engine Online*\n\n"
+        f"• Feed: {feed_mode}\n"
+        "• Watchlist: 5 High-Expectancy Pairs\n"
+        "• Memory Engine: Active (Prevents repeating failed setups)\n"
+        "• Asymmetric R:R: 1:1.33 (TP = 1.6 ATR, SL = 1.2 ATR)\n"
+        "• Schedule: 15-minute background scans (24/5)"
     )
     try:
         await application.bot.send_message(
@@ -107,7 +108,7 @@ async def post_init_hook(application):
         log.error(f"Boot notification failure: {ex}")
 
 def main():
-    log.info("Starting Multi-Timeframe Forex Trade Engine...")
+    log.info("Starting Precision Forex Trade Engine...")
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -124,13 +125,12 @@ def main():
     app.add_error_handler(error_handler)
 
     if app.job_queue:
-        # Run background scanner every 5 minutes (300 seconds)
         app.job_queue.run_repeating(
             scheduled_scan_job,
-            interval=300,
+            interval=900,  # 15 minutes
             first=20
         )
-        log.info("5-minute multi-timeframe background job queue initialized.")
+        log.info("15-minute background job queue initialized.")
 
     log.info("Polling Telegram updates...")
     app.run_polling(drop_pending_updates=True)
