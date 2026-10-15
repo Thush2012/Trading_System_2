@@ -12,59 +12,27 @@ try:
 except ImportError:
     MT5_AVAILABLE = False
 
-log = setup_system_logger("MultiTimeframeScanner")
+log = setup_system_logger("PrecisionForexScanner")
 
-# Liquid Forex majors and crosses
+# Institutional Forex Watchlist (Focus on highest liquidity)
 FOREX_MARKETS = {
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.5},
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.2},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.5},
-    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.5},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.5},
-    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.8},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 3.2},
-}
-
-TIMEFRAME_CONFIG = {
-    "5m": {
-        "macro_tf": "15m",
-        "adx_threshold": 22.0,
-        "min_pips": 8.0,
-        "sl_mult": 1.4,
-        "tp1_mult": 1.2,
-        "tp2_mult": 2.0,
-        "tp3_mult": 2.8,
-        "desc": "FAST SCALP"
-    },
-    "15m": {
-        "macro_tf": "1h",
-        "adx_threshold": 24.0,
-        "min_pips": 12.0,
-        "sl_mult": 1.5,
-        "tp1_mult": 1.5,
-        "tp2_mult": 2.2,
-        "tp3_mult": 3.0,
-        "desc": "INTRADAY SWING"
-    },
-    "1h": {
-        "macro_tf": "1d",
-        "adx_threshold": 25.0,
-        "min_pips": 22.0,
-        "sl_mult": 1.8,
-        "tp1_mult": 2.0,
-        "tp2_mult": 3.0,
-        "tp3_mult": 4.0,
-        "desc": "MACRO TREND"
-    }
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
+    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.0},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
+    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
+    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
+    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.5},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.8},
 }
 
 class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_period_sec = 1200  # 20-minute anti-spam cooldown per symbol/timeframe
+        self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
+        self.min_target_pips = 14.0      # Reject small noise moves under 14 pips
         self.mt5_initialized = False
         self.init_mt5_terminal()
 
@@ -78,9 +46,8 @@ class LightweightScanner:
             self.mt5_initialized = False
 
     def is_within_trading_window(self) -> bool:
-        """24/5 Trading: Active Monday through Friday, closed over weekends."""
-        weekday = datetime.now(timezone.utc).weekday()
-        return weekday < 5
+        """Active Monday through Friday. Rejects weekend rollover."""
+        return datetime.now(timezone.utc).weekday() < 5
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         high = df["High"]
@@ -122,40 +89,30 @@ class LightweightScanner:
         dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
         return dx.rolling(window=period).mean()
 
-    def fetch_mt5_data(self, symbol: str, interval: str, count: int) -> pd.DataFrame:
+    def fetch_mt5_data(self, symbol: str, timeframe, count: int) -> pd.DataFrame:
         if not self.mt5_initialized:
             return pd.DataFrame()
-        tf_map = {
-            "5m": mt5.TIMEFRAME_M5,
-            "15m": mt5.TIMEFRAME_M15,
-            "1h": mt5.TIMEFRAME_H1,
-            "1d": mt5.TIMEFRAME_D1
-        }
-        tf = tf_map.get(interval)
-        if tf is None:
-            return pd.DataFrame()
-
         suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
         broker_symbol = f"{symbol}{suffix}"
         mt5.symbol_select(broker_symbol, True)
-        rates = mt5.copy_rates_from_pos(broker_symbol, tf, 0, count)
+        rates = mt5.copy_rates_from_pos(broker_symbol, timeframe, 0, count)
         if rates is None or len(rates) == 0:
             return pd.DataFrame()
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s")
-        df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
+        df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "tick_volume": "Volume"}, inplace=True)
         return df
 
     def fetch_data(self, symbol: str, ticker: str, interval: str, count: int) -> pd.DataFrame:
         if self.mt5_initialized:
-            df = self.fetch_mt5_data(symbol, interval, count)
-            if not df.empty and len(df) >= 120:
+            tf = mt5.TIMEFRAME_M15 if interval == "15m" else mt5.TIMEFRAME_H1
+            df = self.fetch_mt5_data(symbol, tf, count)
+            if not df.empty and len(df) >= 205:
                 return df
 
         # Fallback to Yahoo Finance
-        period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
-        period = period_map.get(interval, "1mo")
         try:
+            period = "5d" if interval == "15m" else "1mo"
             df = yf.download(ticker, period=period, interval=interval, progress=False)
             if df.empty:
                 return pd.DataFrame()
@@ -175,47 +132,46 @@ class LightweightScanner:
             return round(info.spread * info.point / pip_size, 1)
         return 1.2
 
-    def evaluate_timeframe(self, symbol: str, meta: dict, tf: str) -> dict:
-        cfg = TIMEFRAME_CONFIG[tf]
-        macro_tf = cfg["macro_tf"]
+    def evaluate_pair(self, symbol: str, meta: dict) -> dict:
         ticker = meta["ticker"]
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
-        # Spread Guard
+        # 1. Spread Filter: Discard widened spreads during volatility
         current_spread = self.get_live_spread_pips(symbol, pip_size)
-        if current_spread > meta.get("max_spread_pips", 3.0):
+        if current_spread > meta.get("max_spread_pips", 2.5):
             return None
 
-        # Fetch base timeframe and higher macro timeframe
-        df_base = self.fetch_data(symbol, ticker, tf, 220)
-        df_macro = self.fetch_data(symbol, ticker, macro_tf, 220)
-
-        if df_base.empty or len(df_base) < 150 or df_macro.empty or len(df_macro) < 120:
+        # 2. Fetch M15 and H1 charts
+        df_m15 = self.fetch_data(symbol, ticker, "15m", 250)
+        df_h1 = self.fetch_data(symbol, ticker, "1h", 250)
+        if df_m15.empty or len(df_m15) < 210 or df_h1.empty or len(df_h1) < 205:
             return None
 
-        # Macro Trend Indicator
-        df_macro["EMA200"] = df_macro["Close"].ewm(span=min(200, len(df_macro)-5), adjust=False).mean()
-        macro_ema200 = float(df_macro["EMA200"].iloc[-1])
-        macro_close = float(df_macro["Close"].iloc[-1])
+        # 3. Macro Trend Analysis (H1 200 EMA + 50 EMA)
+        df_h1["EMA200"] = df_h1["Close"].ewm(span=200, adjust=False).mean()
+        df_h1["EMA50"] = df_h1["Close"].ewm(span=50, adjust=False).mean()
+        h1_ema200 = float(df_h1["EMA200"].iloc[-1])
+        h1_ema50 = float(df_h1["EMA50"].iloc[-1])
+        h1_close = float(df_h1["Close"].iloc[-1])
 
-        # Base Timeframe Indicators
-        df_base["EMA200"] = df_base["Close"].ewm(span=min(200, len(df_base)-5), adjust=False).mean()
-        df_base["EMA50"] = df_base["Close"].ewm(span=50, adjust=False).mean()
-        df_base["EMA20"] = df_base["Close"].ewm(span=20, adjust=False).mean()
-        df_base["RSI"] = self.calculate_rsi(df_base["Close"], period=14)
-        df_base["ADX"] = self.calculate_adx(df_base, period=14)
-        df_base["ATR"] = self.calculate_atr(df_base, period=14)
+        # 4. M15 Intraday Indicators
+        df_m15["EMA200"] = df_m15["Close"].ewm(span=200, adjust=False).mean()
+        df_m15["EMA50"] = df_m15["Close"].ewm(span=50, adjust=False).mean()
+        df_m15["EMA20"] = df_m15["Close"].ewm(span=20, adjust=False).mean()
+        df_m15["RSI"] = self.calculate_rsi(df_m15["Close"], period=14)
+        df_m15["ADX"] = self.calculate_adx(df_m15, period=14)
+        df_m15["ATR"] = self.calculate_atr(df_m15, period=14)
 
-        curr = df_base.iloc[-1]
-        prev = df_base.iloc[-2]
+        curr = df_m15.iloc[-1]
+        prev = df_m15.iloc[-2]
 
         price = float(curr["Close"])
         open_price = float(curr["Open"])
         low_price = float(curr["Low"])
         high_price = float(curr["High"])
 
-        base_ema200 = float(curr["EMA200"])
+        m15_ema200 = float(curr["EMA200"])
         ema50 = float(curr["EMA50"])
         ema20 = float(curr["EMA20"])
         rsi = float(curr["RSI"])
@@ -223,36 +179,54 @@ class LightweightScanner:
         adx_prev = float(prev["ADX"])
         atr = float(curr["ATR"])
 
-        # Momentum threshold check
-        if adx_curr < cfg["adx_threshold"] or np.isnan(atr) or atr == 0:
+        # 5. Momentum filter: ADX >= 24 with rising or stable slope
+        if adx_curr < 24.0 or adx_curr < (adx_prev - 0.5) or np.isnan(atr) or atr == 0:
             return None
+
+        # 6. Rejection Candlestick Geometry
+        body_size = abs(price - open_price)
+        candle_range = max(high_price - low_price, 1e-9)
+        lower_wick = min(open_price, price) - low_price
+        upper_wick = high_price - max(open_price, price)
 
         action = None
 
-        # Bullish Multi-Timeframe Alignment
-        if macro_close > macro_ema200 and price > base_ema200 and ema20 > ema50:
-            if 46 <= rsi <= 68 and price > open_price:
-                if abs(low_price - ema20) <= (0.75 * atr) or low_price <= ema20:
-                    action = "BUY / LONG"
+        # BULLISH SETUP:
+        # - H1 Macro Trend is UP (H1 Close > 200 EMA and H1 50 EMA > 200 EMA)
+        # - M15 Price > 200 EMA and 20 EMA > 50 EMA
+        # - Pullback to 20 EMA (Low touched within 0.5x ATR of 20 EMA)
+        # - Bullish rejection candle (Green close + lower wick showing buyer defense)
+        if h1_close > h1_ema200 and h1_ema50 > h1_ema200 and price > m15_ema200 and ema20 > ema50:
+            if 48 <= rsi <= 64 and price > open_price:
+                if abs(low_price - ema20) <= (0.55 * atr) or low_price <= ema20:
+                    if (lower_wick >= 0.25 * candle_range) or (body_size >= 0.5 * candle_range):
+                        action = "BUY / LONG"
 
-        # Bearish Multi-Timeframe Alignment
-        elif macro_close < macro_ema200 and price < base_ema200 and ema20 < ema50:
-            if 32 <= rsi <= 54 and price < open_price:
-                if abs(high_price - ema20) <= (0.75 * atr) or high_price >= ema20:
-                    action = "SELL / SHORT"
+        # BEARISH SETUP:
+        # - H1 Macro Trend is DOWN (H1 Close < 200 EMA and H1 50 EMA < 200 EMA)
+        # - M15 Price < 200 EMA and 20 EMA < 50 EMA
+        # - Pullback to 20 EMA (High touched within 0.5x ATR of 20 EMA)
+        # - Bearish rejection candle (Red close + upper wick showing seller defense)
+        elif h1_close < h1_ema200 and h1_ema50 < h1_ema200 and price < m15_ema200 and ema20 < ema50:
+            if 34 <= rsi <= 52 and price < open_price:
+                if abs(high_price - ema20) <= (0.55 * atr) or high_price >= ema20:
+                    if (upper_wick >= 0.25 * candle_range) or (body_size >= 0.5 * candle_range):
+                        action = "SELL / SHORT"
 
         if not action:
             return None
 
-        # Risk-reward and spread buffer calculations
+        # 7. Spread-Protected Dynamic Targets
         spread_allowance = current_spread * pip_size
-        sl_distance = (cfg["sl_mult"] * atr) + spread_allowance
-        tp1_distance = cfg["tp1_mult"] * atr
-        tp2_distance = cfg["tp2_mult"] * atr
-        tp3_distance = cfg["tp3_mult"] * atr
+        sl_distance = (1.5 * atr) + spread_allowance
+        tp1_distance = 1.2 * atr
+        tp2_distance = 2.0 * atr
+        tp3_distance = 3.0 * atr
 
         tp1_pips = round(tp1_distance / pip_size, 1)
-        if tp1_pips < cfg["min_pips"]:
+
+        # Minimum target floor (Must clear at least 14 pips)
+        if tp1_pips < self.min_target_pips:
             return None
 
         entry_low = round(min(price, open_price), digits)
@@ -274,8 +248,6 @@ class LightweightScanner:
 
         return {
             "symbol": symbol,
-            "timeframe": tf,
-            "strategy_type": cfg["desc"],
             "action": action,
             "entry_low": entry_low,
             "entry_high": entry_high,
@@ -290,7 +262,7 @@ class LightweightScanner:
             "rsi": round(rsi, 1),
             "adx": round(adx_curr, 1),
             "source": source_name,
-            "setup": f"{tf.upper()} {cfg['desc']}",
+            "setup": "H1_M15_REJECTION",
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 
@@ -302,19 +274,16 @@ class LightweightScanner:
         results = []
         now = datetime.now(timezone.utc).timestamp()
 
-        # Iterate across all pairs and enabled timeframes (5m, 15m, 1h)
         for symbol, meta in self.market_map.items():
-            for tf in ["5m", "15m", "1h"]:
-                cooldown_key = f"{symbol}_{tf}"
-                if not bypass_cooldown:
-                    last_time = self.cooldowns.get(cooldown_key, 0)
-                    if now - last_time < self.cooldown_period_sec:
-                        continue
+            if not bypass_cooldown:
+                last_time = self.cooldowns.get(symbol, 0)
+                if now - last_time < self.cooldown_period_sec:
+                    continue
 
-                signal = self.evaluate_timeframe(symbol, meta, tf)
-                if signal:
-                    self.cooldowns[cooldown_key] = now
-                    results.append(signal)
+            signal = self.evaluate_pair(symbol, meta)
+            if signal:
+                self.cooldowns[symbol] = now
+                results.append(signal)
 
         return pd.DataFrame(results) if results else pd.DataFrame()
 
