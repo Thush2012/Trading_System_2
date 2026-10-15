@@ -12,27 +12,24 @@ try:
 except ImportError:
     MT5_AVAILABLE = False
 
-log = setup_system_logger("PrecisionForexScanner")
+log = setup_system_logger("ForexScanner")
 
-# Institutional Forex Watchlist (Focus on highest liquidity)
+# HIGH-EXPECTANCY PAIRS ONLY
+# Removed EURJPY, USDCAD, and USDCHF based on week 41 MT5 report analysis
 FOREX_MARKETS = {
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
-    "GBPUSD": {"ticker": "GBPUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.0},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
-    "USDCAD": {"ticker": "USDCAD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "USDCHF": {"ticker": "USDCHF=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.2},
-    "EURJPY": {"ticker": "EURJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.5},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.8},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 1.8},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 1.8},
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 1.8},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.6},
 }
 
 class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_period_sec = 1800  # 30-minute cooldown per pair
-        self.min_target_pips = 14.0      # Reject small noise moves under 14 pips
+        self.cooldown_period_sec = 2400  # 40-minute cooldown to prevent immediate revenge entries
+        self.min_target_pips = 16.0      # Enforce healthy minimum profit size
         self.mt5_initialized = False
         self.init_mt5_terminal()
 
@@ -41,12 +38,12 @@ class LightweightScanner:
             return
         if mt5.initialize():
             self.mt5_initialized = True
-            log.info("Live MT5 Terminal connected. Direct institutional data feed enabled.")
+            log.info("Live MT5 Terminal connected. Direct institutional data feed active.")
         else:
             self.mt5_initialized = False
 
     def is_within_trading_window(self) -> bool:
-        """Active Monday through Friday. Rejects weekend rollover."""
+        """24/5 continuous trading, avoiding weekend spreads."""
         return datetime.now(timezone.utc).weekday() < 5
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -110,7 +107,6 @@ class LightweightScanner:
             if not df.empty and len(df) >= 205:
                 return df
 
-        # Fallback to Yahoo Finance
         try:
             period = "5d" if interval == "15m" else "1mo"
             df = yf.download(ticker, period=period, interval=interval, progress=False)
@@ -137,25 +133,23 @@ class LightweightScanner:
         pip_size = meta["pip_size"]
         digits = meta["digits"]
 
-        # 1. Spread Filter: Discard widened spreads during volatility
         current_spread = self.get_live_spread_pips(symbol, pip_size)
-        if current_spread > meta.get("max_spread_pips", 2.5):
+        if current_spread > meta.get("max_spread_pips", 2.0):
             return None
 
-        # 2. Fetch M15 and H1 charts
         df_m15 = self.fetch_data(symbol, ticker, "15m", 250)
         df_h1 = self.fetch_data(symbol, ticker, "1h", 250)
         if df_m15.empty or len(df_m15) < 210 or df_h1.empty or len(df_h1) < 205:
             return None
 
-        # 3. Macro Trend Analysis (H1 200 EMA + 50 EMA)
+        # 1. Macro Trend: H1 200 EMA + 50 EMA Slope
         df_h1["EMA200"] = df_h1["Close"].ewm(span=200, adjust=False).mean()
         df_h1["EMA50"] = df_h1["Close"].ewm(span=50, adjust=False).mean()
         h1_ema200 = float(df_h1["EMA200"].iloc[-1])
         h1_ema50 = float(df_h1["EMA50"].iloc[-1])
         h1_close = float(df_h1["Close"].iloc[-1])
 
-        # 4. M15 Intraday Indicators
+        # 2. M15 Indicators
         df_m15["EMA200"] = df_m15["Close"].ewm(span=200, adjust=False).mean()
         df_m15["EMA50"] = df_m15["Close"].ewm(span=50, adjust=False).mean()
         df_m15["EMA20"] = df_m15["Close"].ewm(span=20, adjust=False).mean()
@@ -179,11 +173,11 @@ class LightweightScanner:
         adx_prev = float(prev["ADX"])
         atr = float(curr["ATR"])
 
-        # 5. Momentum filter: ADX >= 24 with rising or stable slope
-        if adx_curr < 24.0 or adx_curr < (adx_prev - 0.5) or np.isnan(atr) or atr == 0:
+        # Stricter momentum threshold: require sustained trend
+        if adx_curr < 25.0 or adx_curr < adx_prev or np.isnan(atr) or atr == 0:
             return None
 
-        # 6. Rejection Candlestick Geometry
+        # Candlestick Anatomy
         body_size = abs(price - open_price)
         candle_range = max(high_price - low_price, 1e-9)
         lower_wick = min(open_price, price) - low_price
@@ -191,58 +185,43 @@ class LightweightScanner:
 
         action = None
 
-        # BULLISH SETUP:
-        # - H1 Macro Trend is UP (H1 Close > 200 EMA and H1 50 EMA > 200 EMA)
-        # - M15 Price > 200 EMA and 20 EMA > 50 EMA
-        # - Pullback to 20 EMA (Low touched within 0.5x ATR of 20 EMA)
-        # - Bullish rejection candle (Green close + lower wick showing buyer defense)
+        # BUY: Confirmed Uptrend on H1 & M15 + Rejection of EMA 20
         if h1_close > h1_ema200 and h1_ema50 > h1_ema200 and price > m15_ema200 and ema20 > ema50:
-            if 48 <= rsi <= 64 and price > open_price:
-                if abs(low_price - ema20) <= (0.55 * atr) or low_price <= ema20:
-                    if (lower_wick >= 0.25 * candle_range) or (body_size >= 0.5 * candle_range):
-                        action = "BUY / LONG"
+            if 50 <= rsi <= 65 and price > open_price:
+                if abs(low_price - ema20) <= (0.5 * atr) or low_price <= ema20:
+                    if lower_wick >= (0.30 * candle_range) or body_size >= (0.55 * candle_range):
+                        action = "BUY"
 
-        # BEARISH SETUP:
-        # - H1 Macro Trend is DOWN (H1 Close < 200 EMA and H1 50 EMA < 200 EMA)
-        # - M15 Price < 200 EMA and 20 EMA < 50 EMA
-        # - Pullback to 20 EMA (High touched within 0.5x ATR of 20 EMA)
-        # - Bearish rejection candle (Red close + upper wick showing seller defense)
+        # SELL: Confirmed Downtrend on H1 & M15 + Rejection of EMA 20
         elif h1_close < h1_ema200 and h1_ema50 < h1_ema200 and price < m15_ema200 and ema20 < ema50:
-            if 34 <= rsi <= 52 and price < open_price:
-                if abs(high_price - ema20) <= (0.55 * atr) or high_price >= ema20:
-                    if (upper_wick >= 0.25 * candle_range) or (body_size >= 0.5 * candle_range):
-                        action = "SELL / SHORT"
+            if 35 <= rsi <= 50 and price < open_price:
+                if abs(high_price - ema20) <= (0.5 * atr) or high_price >= ema20:
+                    if upper_wick >= (0.30 * candle_range) or body_size >= (0.55 * candle_range):
+                        action = "SELL"
 
         if not action:
             return None
 
-        # 7. Spread-Protected Dynamic Targets
-        spread_allowance = current_spread * pip_size
-        sl_distance = (1.5 * atr) + spread_allowance
-        tp1_distance = 1.2 * atr
-        tp2_distance = 2.0 * atr
-        tp3_distance = 3.0 * atr
+        # 3. Mathematical Edge: 1 : 1.33 Risk-to-Reward
+        # SL = 1.2 * ATR (Tighter risk) | TP = 1.6 * ATR (Larger payoff)
+        sl_distance = 1.2 * atr
+        tp_distance = 1.6 * atr
 
-        tp1_pips = round(tp1_distance / pip_size, 1)
+        sl_pips = round(sl_distance / pip_size, 1)
+        tp_pips = round(tp_distance / pip_size, 1)
 
-        # Minimum target floor (Must clear at least 14 pips)
-        if tp1_pips < self.min_target_pips:
+        if tp_pips < self.min_target_pips:
             return None
 
         entry_low = round(min(price, open_price), digits)
         entry_high = round(max(price, open_price), digits)
-        sl_pips = round(sl_distance / pip_size, 1)
 
-        if "BUY" in action:
+        if action == "BUY":
             sl = round(price - sl_distance, digits)
-            tp1 = round(price + tp1_distance, digits)
-            tp2 = round(price + tp2_distance, digits)
-            tp3 = round(price + tp3_distance, digits)
+            tp = round(price + tp_distance, digits)
         else:
             sl = round(price + sl_distance, digits)
-            tp1 = round(price - tp1_distance, digits)
-            tp2 = round(price - tp2_distance, digits)
-            tp3 = round(price - tp3_distance, digits)
+            tp = round(price - tp_distance, digits)
 
         source_name = "Live MT5" if self.mt5_initialized else "Web Feed"
 
@@ -253,22 +232,24 @@ class LightweightScanner:
             "entry_high": entry_high,
             "current_price": round(price, digits),
             "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "tp3": tp3,
+            "tp": tp,
+            "tp1": tp,
+            "tp2": round(price + (2.4 * atr) if action == "BUY" else price - (2.4 * atr), digits),
+            "tp3": round(price + (3.2 * atr) if action == "BUY" else price - (3.2 * atr), digits),
             "sl_pips": sl_pips,
-            "tp1_pips": tp1_pips,
+            "tp_pips": tp_pips,
+            "risk_reward": "1:1.33",
             "spread_pips": current_spread,
             "rsi": round(rsi, 1),
             "adx": round(adx_curr, 1),
             "source": source_name,
-            "setup": "H1_M15_REJECTION",
+            "setup": "H1_M15_ASYMMETRIC_REJECTION",
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 
     async def scan_all(self, bypass_cooldown: bool = False, enforce_window: bool = True) -> pd.DataFrame:
         if enforce_window and not self.is_within_trading_window():
-            log.info("Weekend markets closed. Scanner sleeping.")
+            log.info("Weekend rollover. Scanner standby.")
             return pd.DataFrame()
 
         results = []
