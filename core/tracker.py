@@ -54,18 +54,18 @@ class TradeTracker:
                 msg = (
                     f"🛑 *STOP LOSS HIT: {sym}*\n"
                     f"Direction: *{tr['action']}* | Exit: `{px}`\n"
-                    "🧠 *Memory:* Direction locked for 3h. Recovery Mode (2.0R) engaged."
+                    "🧠 *Memory Engine:* Deficit recorded & rules evolved. Direction locked for 3h."
                 )
                 events.append({"symbol": sym, "type": "SL", "msg": msg})
                 closed.append(sym)
 
             elif tp_hit:
                 est_win = round(tr["tp_pips"] * 0.10, 2)
-                memory_guard.register_take_profit(est_win)
+                memory_guard.register_take_profit(sym, est_win)
                 msg = (
                     f"🎯 *TAKE PROFIT HIT: {sym}*\n"
                     f"Direction: *{tr['action']}* | Exit: `{px}`\n"
-                    "✅ *Status:* Target reached cleanly."
+                    "✅ *Memory Engine:* Profit recorded, deficit reduced, rules reinforced."
                 )
                 events.append({"symbol": sym, "type": "TP", "msg": msg})
                 closed.append(sym)

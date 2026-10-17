@@ -37,7 +37,6 @@ class LightweightScanner:
         self._connect_mt5()
 
     def _connect_mt5(self):
-        # Prevent MT5 initialization on Saturday (5) and Sunday (6)
         if datetime.now(self.slt_tz).weekday() >= 5:
             return
         if HAS_MT5 and mt5.initialize():
@@ -45,7 +44,6 @@ class LightweightScanner:
             log.info("MT5 Live Feed active.")
 
     def is_within_trading_window(self) -> bool:
-        """Checks if current time in Sri Lanka is Mon-Fri between 1:30 PM and 9:30 PM."""
         now_slt = datetime.now(self.slt_tz)
         if now_slt.weekday() >= 5:
             return False
@@ -125,35 +123,39 @@ class LightweightScanner:
         rsi = float(curr["RSI"])
         e200, e50, e20 = float(curr["EMA200"]), float(curr["EMA50"]), float(curr["EMA20"])
 
-        # News Spike / Volatility Anomaly Shield: Skip if current bar is > 2.8x normal ATR
-        bar_range = high_p - low_p
-        if np.isnan(atr) or atr <= 0 or bar_range > (2.8 * atr):
+        if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (2.8 * atr):
             return None
+
+        # Fetch Self-Learned Pair Parameters from Memory Engine
+        pair_rules = memory_guard.get_pair_rules(symbol)
+        pullback_limit = pair_rules["pullback_atr"]  # Evolves dynamically based on past losses
 
         direction = None
         if h1_c > h1_e200 and h1_e50 > h1_e200 and price > e200 and e20 > e50:
-            if 50 <= rsi <= 65 and price > open_p and abs(low_p - e20) <= (0.55 * atr):
+            if 50 <= rsi <= 65 and price > open_p and abs(low_p - e20) <= (pullback_limit * atr):
                 direction = "BUY"
         elif h1_c < h1_e200 and h1_e50 < h1_e200 and price < e200 and e20 < e50:
-            if 35 <= rsi <= 50 and price < open_p and abs(high_p - e20) <= (0.55 * atr):
+            if 35 <= rsi <= 50 and price < open_p and abs(high_p - e20) <= (pullback_limit * atr):
                 direction = "SELL"
 
         if not direction:
             return None
 
-        # Check Loss Memory & Recovery Status
+        # Check Loss Memory & Learned Thresholds
         allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
             log.info(f"Skipped {symbol} {direction}: {reason}")
             return None
 
         in_recovery = rec_meta.get("recovery_active", False)
-        min_adx_req = 28.0 if in_recovery else 25.0
+        learned_min_adx = rec_meta.get("learned_min_adx", pair_rules["min_adx"])
 
-        if adx_now < min_adx_req or adx_now < adx_prev:
+        # Recovery mode boosts the ADX requirement higher for safety
+        final_adx_threshold = learned_min_adx + 3.0 if in_recovery else learned_min_adx
+
+        if adx_now < final_adx_threshold or adx_now < adx_prev:
             return None
 
-        # Asymmetric R:R (Boosted in Recovery Mode)
         sl_mult = 1.2
         tp_mult = 2.0 if in_recovery else 1.6
 
@@ -170,7 +172,7 @@ class LightweightScanner:
         sl_val = round(price - sl_dist if direction == "BUY" else price + sl_dist, dig)
         tp_val = round(price + tp_dist if direction == "BUY" else price - tp_dist, dig)
 
-        mode_label = "RECOVERY_2.0R" if in_recovery else "STANDARD_1.6R"
+        mode_label = f"ADX>={final_adx_threshold:.1f} (RECOVERY)" if in_recovery else f"ADX>={final_adx_threshold:.1f} (LEARNED)"
 
         return {
             "symbol": symbol,
@@ -192,7 +194,6 @@ class LightweightScanner:
         }
 
     async def scan_all(self, bypass_cooldown: bool = False, enforce_window: bool = True) -> pd.DataFrame:
-        # 24/7 data analysis runs first to keep memory/logs warm
         discovered = []
         now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -201,7 +202,6 @@ class LightweightScanner:
                 continue
             sig = self.evaluate_pair(sym, meta)
             if sig:
-                # Only dispatch executable signals inside the 1:30 PM - 9:30 PM SLT window (Mon-Fri)
                 if enforce_window and not self.is_within_trading_window():
                     log.info(f"Analyzed {sym} {sig['action']} setup outside trading hours (Standby).")
                     continue
