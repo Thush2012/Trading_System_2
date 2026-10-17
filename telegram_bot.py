@@ -1,9 +1,8 @@
 import os
-import asyncio
 import logging
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
-from core.scanner import LightweightScanner
+from core.scanner import LightweightScanner, memory_guard
 from core.logger import setup_system_logger
 
 log = setup_system_logger("TelegramBot")
@@ -16,64 +15,64 @@ def get_main_keyboard():
         [
             ["⚡ Scan Market Opportunities"],
             ["ℹ️ System Status"],
-            ["🕒 Trading Sessions", "🛡️ High-Accuracy Rules"]
+            ["🕒 Trading Hours", "🛡️ Daily Target & Memory"]
         ],
         resize_keyboard=True
     )
 
 def format_signal_message(row: dict) -> str:
-    feed = row.get("source", "Live MT5")
-    spread = row.get("spread_pips", "Normal")
+    setup_mode = row.get("setup", "STANDARD_1.6R")
+    mode_badge = "🔥 *RECOVERY MODE (2.0R)*" if "RECOVERY" in setup_mode else "✅ *STANDARD MODE (1.6R)*"
 
     return (
-        f"⚡ *HIGH ACCURACY FOREX SIGNAL: {row['symbol']}*\n"
-        f"Direction: *{row['action']}*\n"
-        f"Strategy: *{row['setup']}*\n\n"
+        f"⚡ *FOREX SIGNAL: {row['symbol']}*\n"
+        f"Mode: {mode_badge}\n"
+        f"Direction: *{row['action']}*\n\n"
         f"📍 *Entry Zone:* `{row['entry_low']} - {row['entry_high']}`\n"
         f"🛑 *Stop Loss:* `{row['sl']}` ({row['sl_pips']} pips)\n"
-        f"🎯 *Take Profit:* `{row['tp']}` ({row.get('tp_pips', '')} pips) [RR: {row.get('risk_reward', '1:1.33')}]\n"
-        f"🎯 *Target 2 (Runner):* `{row['tp2']}`\n"
-        f"🎯 *Target 3 (Max):* `{row['tp3']}`\n\n"
+        f"🎯 *Take Profit:* `{row['tp']}` ({row.get('tp_pips', '')} pips)\n\n"
         f"📊 *Indicators:* RSI `{row['rsi']}` | ADX `{row['adx']}`\n"
-        f"📡 *Data Feed:* `{feed}` | Spread: `{spread} pips`\n"
         f"🕒 *Timestamp:* `{row['timestamp']}`\n\n"
-        "💡 *Rule:* 0.01 lot size. Move Stop Loss to Entry when Target 1 is hit."
+        "🤖 *Auto-Execution:* Dispatched to Supabase for local MT5 (0.01 Lot)."
     )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "💎 *Precision Forex Trade Engine Online*\n\n"
-        "• *Engine:* Active 24/5 Direct Cloud/Terminal\n"
-        f"• *Pairs:* {FOREX_PAIRS_DISPLAY}\n"
-        "• *Memory Engine:* Active (Blocks repeated loss setups)\n"
-        "• *Risk Model:* 1:1.33 Asymmetric Payoff (Wins > Losses)\n"
-        "• *Scheduler:* Scanning every 15 minutes"
+        "💎 *24/7 Cloud Analyzer & Auto-Recovery Engine*\n\n"
+        f"• *Monitored Pairs:* {FOREX_PAIRS_DISPLAY}\n"
+        "• *Cloud Analysis:* 24/7 Continuous (News & Spike Filtered)\n"
+        "• *Execution Window:* Mon–Fri, 1:30 PM – 9:30 PM SLT\n"
+        "• *Daily Profit Lock:* +$3.00 to +$5.00 (Auto-stops at +$4.00)\n"
+        "• *Loss Memory:* 3h Directional Lockout + 2.0R Recovery"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    feed_type = "MT5 Direct Terminal" if global_scanner.mt5_initialized else "Web Fallback Engine"
+    in_window = global_scanner.is_within_trading_window()
+    state_str = "🟢 EXECUTION ACTIVE (1:30 PM - 9:30 PM SLT)" if in_window else "🔍 24/7 ANALYSIS ONLY (Execution Standby)"
+    rec_active = memory_guard.state.get("in_recovery", False)
+    deficit = memory_guard.state.get("deficit_usd", 0.0)
+    rec_str = f"🔥 Active (Deficit: ${deficit:.2f} | Target: 2.0R)" if rec_active else "✅ Normal (Target: 1.6R)"
 
     msg = (
         "ℹ️ *SYSTEM STATUS*\n"
-        f"• *Data Feed:* {feed_type}\n"
-        "• *Operation Mode:* 24/5 High-Accuracy Continuous Scan\n"
-        "• *Memory Engine:* Enabled (Circuit Breaker active)\n"
-        f"• *Monitored Pairs:* {FOREX_PAIRS_DISPLAY}\n"
-        "• *Filters:* H1/M15 Dual EMA 200, Rejection Wick, ADX >= 25\n"
-        "• *Min Target:* 16.0 Pips"
+        f"• *State:* {state_str}\n"
+        f"• *Recovery Status:* {rec_str}\n"
+        f"• *Pairs:* {FOREX_PAIRS_DISPLAY}\n"
+        "• *Daily Profit Goal:* $3.00 – $5.00 (Locked at +$4.00)\n"
+        "• *Weekend Guard:* MT5 Locked on Sat & Sun"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 *Scanning institutional liquidity with memory guard...*", parse_mode="Markdown")
+    await update.message.reply_text("🔍 *Analyzing market structure across high-expectancy pairs...*", parse_mode="Markdown")
 
     df = await global_scanner.scan_all(bypass_cooldown=True, enforce_window=False)
     if df.empty:
         await update.message.reply_text(
-            "⚪ *No Qualified High-Accuracy Setups Active*\n\n"
-            "All pairs currently fail H1/M15 dual trend alignment, EMA rejection, or are locked by the Loss Memory Engine.\n"
-            "Filtering out bad entries is what protects your win rate.",
+            "⚪ *No Qualified Setups Right Now*\n\n"
+            "All pairs currently fail H1+M15 alignment, ADX momentum, or are locked by the Loss Memory Engine.\n"
+            "Patience protects your daily target.",
             parse_mode="Markdown"
         )
         return
@@ -84,22 +83,20 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_trading_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🕒 *OPTIMAL TRADING SESSIONS (SLT / UTC+5:30)*\n\n"
-        "• *London Session (1:30 PM – 5:30 PM):* High breakout follow-through.\n"
-        "• *London/NY Overlap (5:30 PM – 9:30 PM):* Peak liquidity and tightest spreads.\n"
-        "• *Asian Session (5:30 AM – 1:30 PM):* USDJPY and AUDUSD only.\n\n"
-        "💡 *Note:* The scanner operates 24/5 but only triggers when institutional trend rules are met."
+        "🕒 *OPERATING SCHEDULE (SRI LANKA TIME)*\n\n"
+        "• *24/7 Cloud Analysis:* Runs continuously to track EMAs, ADX, and news volatility.\n"
+        "• *Active Trade Window:* Monday – Friday, *1:30 PM – 9:30 PM SLT*.\n"
+        "• *Weekend Lock:* Completely disabled on Saturday & Sunday so MT5 never opens."
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_risk_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🛡️ *DAILY TARGET & RISK RULES*\n\n"
-        "• *Lot Size:* 0.01 lot fixed.\n"
-        "• *Risk Model:* Stop Loss at 1.2 ATR, Take Profit at 1.6 ATR (Wins > Losses).\n"
-        "• *Loss Memory:* A pair that hits SL is locked for 4 hours.\n"
-        "• *Exposure Limit:* Maximum 2 open trades simultaneously.\n"
-        "• *Discipline:* Never remove or widen a Stop Loss."
+        "🛡️ *DAILY $3–$5 PROFIT & MEMORY RULES*\n\n"
+        "1. *Daily Goal Lock:* Executor automatically stops opening new trades once +$4.00 is banked for the day.\n"
+        "2. *Asymmetric R:R:* SL = 1.2x ATR | Standard TP = 1.6x ATR.\n"
+        "3. *Loss Memory:* If a setup hits SL, that pair & direction is banned for 3 hours.\n"
+        "4. *Recovery Mode:* After a loss, lot stays 0.01, required ADX increases to 28, and TP expands to 2.0x ATR."
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
@@ -109,7 +106,7 @@ async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cmd_scan(update, context)
     elif text == "ℹ️ System Status":
         await cmd_status(update, context)
-    elif text == "🕒 Trading Sessions":
+    elif text == "🕒 Trading Hours":
         await cmd_trading_hours(update, context)
-    elif text == "🛡️ High-Accuracy Rules":
+    elif text == "🛡️ Daily Target & Memory":
         await cmd_risk_rules(update, context)
