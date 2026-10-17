@@ -1,192 +1,187 @@
+import os
+import time
+import logging
+from datetime import datetime
+import pytz
+from dotenv import load_dotenv
+from supabase import create_client, Client
 import MetaTrader5 as mt5
-from core.logger import setup_system_logger
-from core.mt5_connection import connect_mt5
 
-log = setup_system_logger("Executor")
+load_dotenv()
 
-class ExecutionEngine:
-    def __init__(self, magic_number: int = 1001, slippage_deviation: int = 20):
-        self.magic_number = magic_number
-        self.slippage_deviation = slippage_deviation
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("MT5_AutoExecutor")
 
-    def _determine_filling_type(self, symbol_info) -> int:
-        """Dynamically matches broker's execution filling mode (IOC, FOK, or RETURN)."""
-        filling_mode = symbol_info.filling_mode
-        if filling_mode & mt5.ORDER_FILLING_IOC:
-            return mt5.ORDER_FILLING_IOC
-        elif filling_mode & mt5.ORDER_FILLING_FOK:
-            return mt5.ORDER_FILLING_FOK
-        return mt5.ORDER_FILLING_RETURN
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
+MT5_SERVER = os.getenv("MT5_SERVER", "")
+SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
 
-    def place_forex_order(self, symbol: str, action: str, lot_size: float, sl_points: int, tp_points: int) -> dict:
-        """Routes a market order directly through the headless MT5 connection."""
-        if not connect_mt5():
-            log.error("Execution failed: Headless MT5 link is offline.")
-            return {"status": "error", "message": "MT5 connection failed"}
+LOT_SIZE = 0.01
+MAX_OPEN_POSITIONS = 2
 
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            log.error(f"Execution failed: Symbol '{symbol}' not found in MT5.")
-            return {"status": "error", "message": f"Symbol {symbol} not found"}
+# Sri Lanka Time Window Configuration
+LOCAL_TZ = pytz.timezone("Asia/Colombo")
+WINDOW_START_HOUR = 13.5  # 1:30 PM
+WINDOW_END_HOUR = 21.5    # 9:30 PM
 
-        if not symbol_info.visible:
-            if not mt5.symbol_select(symbol, True):
-                log.error(f"Failed to enable symbol '{symbol}' in Market Watch.")
-                return {"status": "error", "message": f"Could not select {symbol}"}
+def is_execution_window_active() -> tuple[bool, str]:
+    """Ensures orders only execute Mon-Fri between 1:30 PM and 9:30 PM SLT."""
+    now = datetime.now(LOCAL_TZ)
+    # Check Weekend: Monday=0, Sunday=6
+    if now.weekday() >= 5:
+        return False, "Market closed for weekend (Saturday/Sunday)."
 
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            log.error(f"Execution failed: No tick quote available for {symbol}.")
-            return {"status": "error", "message": f"No tick available for {symbol}"}
+    current_decimal_hour = now.hour + (now.minute / 60.0)
+    if not (WINDOW_START_HOUR <= current_decimal_hour <= WINDOW_END_HOUR):
+        return False, f"Outside execution window (Current: {now.strftime('%I:%M %p')}, Active: 1:30 PM - 9:30 PM SLT)."
 
-        point = symbol_info.point
-        order_type = mt5.ORDER_TYPE_BUY if action.upper() == "BUY" else mt5.ORDER_TYPE_SELL
-        price = tick.ask if action.upper() == "BUY" else tick.bid
+    return True, "Window Active"
 
-        # Calculate exact SL and TP prices based on broker point precision
-        if action.upper() == "BUY":
-            sl_price = round(price - (sl_points * point), symbol_info.digits) if sl_points > 0 else 0.0
-            tp_price = round(price + (tp_points * point), symbol_info.digits) if tp_points > 0 else 0.0
-        else:
-            sl_price = round(price + (sl_points * point), symbol_info.digits) if sl_points > 0 else 0.0
-            tp_price = round(price - (tp_points * point), symbol_info.digits) if tp_points > 0 else 0.0
+def resolve_filling_mode(symbol: str) -> int:
+    sym_info = mt5.symbol_info(symbol)
+    if not sym_info:
+        return mt5.ORDER_FILLING_IOC
+    modes = sym_info.filling_mode
+    if modes & 2:
+        return mt5.ORDER_FILLING_IOC
+    elif modes & 1:
+        return mt5.ORDER_FILLING_FOK
+    return mt5.ORDER_FILLING_RETURN
 
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": float(lot_size),
-            "type": order_type,
-            "price": price,
-            "sl": sl_price,
-            "tp": tp_price,
-            "deviation": self.slippage_deviation,
-            "magic": self.magic_number,
-            "comment": f"AutoBot {action.upper()}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": self._determine_filling_type(symbol_info),
-        }
+def initialize_terminal() -> bool:
+    if not mt5.initialize():
+        log.error(f"MT5 terminal initialization failed: {mt5.last_error()}")
+        return False
 
-        result = mt5.order_send(request)
-        if result is None:
-            err = mt5.last_error()
-            log.error(f"Order send returned None. Error: {err}")
-            return {"status": "error", "message": str(err)}
+    if MT5_ACCOUNT and MT5_PASSWORD and MT5_SERVER:
+        current_acc = mt5.account_info()
+        if not current_acc or current_acc.login != MT5_ACCOUNT:
+            authorized = mt5.login(login=MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER)
+            if not authorized:
+                log.error(f"Failed to log into MT5 account #{MT5_ACCOUNT}: {mt5.last_error()}")
+                return False
 
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            log.error(f"Order execution rejected. Code: {result.retcode} | Comment: {result.comment}")
-            return {"status": "rejected", "code": result.retcode, "message": result.comment}
+    t_info = mt5.terminal_info()
+    if not t_info.trade_allowed:
+        log.error("Algorithmic Trading is toggled OFF. Ensure 'Algo Trading' toolbar button is GREEN.")
+        return False
 
-        log.info(f"Order #{result.order} executed successfully on {symbol} at {result.price}")
-        return {
-            "status": "success",
-            "order_id": result.order,
-            "entry_price": result.price,
-            "volume": result.volume,
-            "sl": sl_price,
-            "tp": tp_price
-        }
+    acc_info = mt5.account_info()
+    if not acc_info or not acc_info.trade_allowed:
+        log.error("Account trading disabled. Confirm login with Master Trading Password.")
+        return False
 
-    def manage_open_positions(self, symbol: str, breakeven_pips: float = 15.0, trail_distance_pips: float = 10.0) -> list[str]:
-        """
-        Manages open trades with two-tier protection:
-        1. Moves Stop Loss to Entry Price (Break-Even) after +15 pips to neutralize downside risk.
-        2. Ratchets Trailing Stop higher/lower for every +10 pips gained beyond break-even.
-        """
-        notes = []
-        if not connect_mt5():
-            return notes
+    log.info(f"Connected to MT5 | Account: {acc_info.login} ({acc_info.company}) | Balance: ${acc_info.balance:.2f}")
+    return True
 
-        positions = mt5.positions_get(symbol=symbol)
-        if not positions:
-            return notes
+def process_trade_signal(sig: dict) -> tuple[bool, str | int]:
+    # 1. Enforce Trading Hours & Weekend Guard
+    allowed, window_msg = is_execution_window_active()
+    if not allowed:
+        log.warning(f"Trade rejected by window guard: {window_msg}")
+        return False, f"WINDOW_RESTRICTION: {window_msg}"
 
-        sym_info = mt5.symbol_info(symbol)
-        if sym_info is None:
-            return notes
+    raw_symbol = sig["symbol"]
+    broker_symbol = f"{raw_symbol}{SYMBOL_SUFFIX}"
 
-        point = sym_info.point
-        digits = sym_info.digits
-        # 1 standard pip = 10 points for 3/5 digit broker quotes
-        pip_multiplier = 10 if digits in [3, 5] else 1
-        be_dist = breakeven_pips * point * pip_multiplier
-        trail_dist = trail_distance_pips * point * pip_multiplier
+    if not mt5.symbol_select(broker_symbol, True):
+        log.error(f"Symbol {broker_symbol} not found in Market Watch.")
+        return False, "SYMBOL_NOT_FOUND"
 
-        for pos in positions:
-            current_price = pos.price_current
-            entry = pos.price_open
-            ticket = pos.ticket
-            sl = pos.sl
+    sym_info = mt5.symbol_info(broker_symbol)
+    if not sym_info:
+        return False, "SYMBOL_INFO_UNAVAILABLE"
 
-            # --- BUY POSITION LOGIC ---
-            if pos.type == 0:
-                profit_distance = current_price - entry
+    pair_positions = mt5.positions_get(symbol=broker_symbol)
+    if pair_positions and len(pair_positions) > 0:
+        log.warning(f"Position already active on {broker_symbol}. Skipping.")
+        return False, "DUPLICATE_POSITION"
 
-                # Tier 1: Move SL to Break-Even (+ 1 pip spread buffer)
-                if profit_distance >= be_dist and (sl < entry or sl == 0.0):
-                    new_sl = round(entry + (1.0 * point * pip_multiplier), digits)
-                    req = {
-                        "action": mt5.TRADE_ACTION_SLTP,
-                        "position": ticket,
-                        "symbol": symbol,
-                        "sl": new_sl,
-                        "tp": pos.tp
-                    }
-                    res = mt5.order_send(req)
-                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                        notes.append(f"🛡 *BREAK-EVEN LOCKED:* `{symbol}` Stop Loss moved to `{new_sl}`. Trade is now 100% risk-free! (Ticket: `{ticket}`)")
+    total_positions = mt5.positions_get()
+    if total_positions and len(total_positions) >= MAX_OPEN_POSITIONS:
+        log.warning(f"Maximum concurrent open positions reached ({len(total_positions)}/{MAX_OPEN_POSITIONS}).")
+        return False, "MAX_POSITIONS_REACHED"
 
-                # Tier 2: Dynamic Trailing Stop
-                elif profit_distance > be_dist:
-                    ideal_sl = round(current_price - trail_dist, digits)
-                    # Step up only if the new SL improves on the current SL by at least 2 pips
-                    if ideal_sl > (sl + (2.0 * point * pip_multiplier)):
-                        req = {
-                            "action": mt5.TRADE_ACTION_SLTP,
-                            "position": ticket,
-                            "symbol": symbol,
-                            "sl": ideal_sl,
-                            "tp": pos.tp
-                        }
-                        res = mt5.order_send(req)
-                        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                            notes.append(f"📈 *TRAILING PROFIT LOCKED:* `{symbol}` SL raised to `{ideal_sl}` (Ticket: `{ticket}`)")
+    tick = mt5.symbol_info_tick(broker_symbol)
+    if not tick:
+        return False, "LIVE_TICK_UNAVAILABLE"
 
-            # --- SELL POSITION LOGIC ---
-            elif pos.type == 1:
-                profit_distance = entry - current_price
+    direction = sig["action"].upper()
+    is_buy = "BUY" in direction
+    order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+    digits = sym_info.digits
 
-                # Tier 1: Move SL to Break-Even (- 1 pip spread buffer)
-                if profit_distance >= be_dist and (sl > entry or sl == 0.0):
-                    new_sl = round(entry - (1.0 * point * pip_multiplier), digits)
-                    req = {
-                        "action": mt5.TRADE_ACTION_SLTP,
-                        "position": ticket,
-                        "symbol": symbol,
-                        "sl": new_sl,
-                        "tp": pos.tp
-                    }
-                    res = mt5.order_send(req)
-                    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                        notes.append(f"🛡 *BREAK-EVEN LOCKED:* `{symbol}` Stop Loss moved to `{new_sl}`. Trade is now 100% risk-free! (Ticket: `{ticket}`)")
+    entry_price = round(tick.ask if is_buy else tick.bid, digits)
+    sl = round(float(sig["sl"]), digits)
+    tp = round(float(sig.get("tp", sig.get("tp1", 0.0))), digits)
 
-                # Tier 2: Dynamic Trailing Stop
-                elif profit_distance > be_dist:
-                    ideal_sl = round(current_price + trail_dist, digits)
-                    # Step down only if the new SL is tighter by at least 2 pips
-                    if sl == 0.0 or ideal_sl < (sl - (2.0 * point * pip_multiplier)):
-                        req = {
-                            "action": mt5.TRADE_ACTION_SLTP,
-                            "position": ticket,
-                            "symbol": symbol,
-                            "sl": ideal_sl,
-                            "tp": pos.tp
-                        }
-                        res = mt5.order_send(req)
-                        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                            notes.append(f"📈 *TRAILING PROFIT LOCKED:* `{symbol}` SL lowered to `{ideal_sl}` (Ticket: `{ticket}`)")
+    order_payload = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": broker_symbol,
+        "volume": LOT_SIZE,
+        "type": order_type,
+        "price": entry_price,
+        "sl": sl,
+        "tp": tp,
+        "deviation": 25,
+        "magic": 992026,
+        "comment": "AutoSignal Engine",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": resolve_filling_mode(broker_symbol),
+    }
 
-        return notes
+    result = mt5.order_send(order_payload)
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        log.info(f"Order filled: #{result.order} {broker_symbol} {direction} @ {entry_price} | SL: {sl} | TP: {tp}")
+        return True, result.order
+    else:
+        log.error(f"Order rejected on {broker_symbol}: Retcode {result.retcode} ({result.comment})")
+        return False, f"RETCODE_{result.retcode}: {result.comment}"
 
-    async def close(self):
-        """Cleanup handler when execution engine shuts down."""
-        pass
+def run_executor():
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        log.error("Missing SUPABASE_URL or SUPABASE_KEY in local .env.")
+        return
+
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    if not initialize_terminal():
+        return
+
+    log.info("MT5 Local Executor active. Polling Supabase (1:30 PM - 9:30 PM SLT Execution Guard active)...")
+
+    while True:
+        try:
+            # Query oldest pending signal
+            query = supabase.table("trade_signals").select("*").eq("status", "PENDING").order("created_at").limit(1).execute()
+            pending_batch = query.data
+
+            if pending_batch:
+                for sig in pending_batch:
+                    sig_id = sig["id"]
+                    log.info(f"Processing trade signal #{sig_id}: {sig['symbol']} {sig['action']}")
+                    success, outcome = process_trade_signal(sig)
+
+                    status_str = "EXECUTED" if success else "FAILED"
+                    payload = {"status": status_str}
+                    if success:
+                        payload["mt5_ticket"] = outcome
+                    else:
+                        payload["error_message"] = str(outcome)
+
+                    supabase.table("trade_signals").update(payload).eq("id", sig_id).execute()
+
+            time.sleep(3)
+        except KeyboardInterrupt:
+            log.info("Stopping executor...")
+            mt5.shutdown()
+            break
+        except Exception as err:
+            log.error(f"Execution loop exception: {err}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    run_executor()

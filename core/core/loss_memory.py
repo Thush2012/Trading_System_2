@@ -1,86 +1,91 @@
 import os
 import json
-import logging
 from datetime import datetime, timezone
 from core.logger import setup_system_logger
 
 log = setup_system_logger("LossMemory")
-MEMORY_FILE = "loss_memory.json"
+MEMORY_PATH = "loss_memory.json"
 
 class LossMemoryEngine:
-    def __init__(self, lock_duration_sec: int = 14400):  # 4-hour directional lockout
-        self.lock_duration_sec = lock_duration_sec
-        self.memory = self._load_memory()
+    def __init__(self, ban_seconds: int = 10800):
+        self.ban_seconds = ban_seconds  # 3-hour lockout per failed direction
+        self.state = self._read_disk()
 
-    def _load_memory(self) -> dict:
-        if os.path.exists(MEMORY_FILE):
+    def _read_disk(self) -> dict:
+        if os.path.exists(MEMORY_PATH):
             try:
-                with open(MEMORY_FILE, "r") as f:
+                with open(MEMORY_PATH, "r") as f:
                     return json.load(f)
-            except Exception as e:
-                log.error(f"Error loading loss memory: {e}")
-        return {"banned_patterns": {}, "pair_stats": {}}
-
-    def _save_memory(self):
-        try:
-            with open(MEMORY_FILE, "w") as f:
-                json.dump(self.memory, f, indent=2)
-        except Exception as e:
-            log.error(f"Error saving loss memory: {e}")
-
-    def record_loss(self, symbol: str, action: str, adx: float, atr: float):
-        """Records a failed trade signature to prevent repeating it."""
-        now = datetime.now(timezone.utc).timestamp()
-        key = f"{symbol}_{action.upper()}"
-
-        # 1. Ban this exact direction and pair for the lockout duration
-        self.memory["banned_patterns"][key] = {
-            "symbol": symbol,
-            "action": action.upper(),
-            "failed_at": now,
-            "adx_at_failure": adx,
-            "atr_at_failure": atr,
-            "expires_at": now + self.lock_duration_sec
+            except Exception as err:
+                log.error(f"Could not read memory file: {err}")
+        return {
+            "locked_directions": {},
+            "in_recovery": False,
+            "deficit_usd": 0.0,
+            "loss_streak": 0
         }
 
-        # 2. Track consecutive failures per pair for circuit breaking
-        stats = self.memory["pair_stats"].get(symbol, {"consecutive_losses": 0, "last_loss": 0})
-        stats["consecutive_losses"] += 1
-        stats["last_loss"] = now
-        self.memory["pair_stats"][symbol] = stats
+    def _write_disk(self):
+        try:
+            with open(MEMORY_PATH, "w") as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as err:
+            log.error(f"Could not save memory file: {err}")
 
-        self._save_memory()
-        log.warning(f"🧠 Memory Recorded: Banned {key} until {datetime.fromtimestamp(now + self.lock_duration_sec, tz=timezone.utc).strftime('%H:%M UTC')}")
+    def register_stop_loss(self, symbol: str, direction: str, loss_usd: float, adx_at_entry: float):
+        now_ts = datetime.now(timezone.utc).timestamp()
+        pattern_id = f"{symbol}_{direction.upper()}"
 
-    def record_win(self, symbol: str):
-        """Resets loss penalty counters on winning trades."""
-        if symbol in self.memory["pair_stats"]:
-            self.memory["pair_stats"][symbol]["consecutive_losses"] = 0
-            self._save_memory()
+        self.state["locked_directions"][pattern_id] = {
+            "expires": now_ts + self.ban_seconds,
+            "failed_adx": adx_at_entry
+        }
+        self.state["in_recovery"] = True
+        self.state["deficit_usd"] = round(self.state.get("deficit_usd", 0.0) + abs(loss_usd), 2)
+        self.state["loss_streak"] = self.state.get("loss_streak", 0) + 1
+        self._write_disk()
+        log.warning(f"Memory Lock Engaged: {pattern_id} banned for 3h. Recovery Deficit: ${self.state['deficit_usd']}")
 
-    def is_setup_allowed(self, symbol: str, action: str, current_adx: float) -> tuple[bool, str]:
-        """Checks incoming setups against memory of previous failures."""
-        now = datetime.now(timezone.utc).timestamp()
-        key = f"{symbol}_{action.upper()}"
-
-        # Check Active Directional Lockout
-        if key in self.memory["banned_patterns"]:
-            ban = self.memory["banned_patterns"][key]
-            if now < ban["expires_at"]:
-                remaining_mins = int((ban["expires_at"] - now) / 60)
-                if current_adx < (ban["adx_at_failure"] + 4.0):
-                    return False, f"Memory Lockout: {key} failed recently. Blocked for {remaining_mins}m (Needs ADX >= {ban['adx_at_failure'] + 4.0:.1f})"
+    def register_take_profit(self, profit_usd: float):
+        if self.state.get("in_recovery", False):
+            remaining = self.state.get("deficit_usd", 0.0) - abs(profit_usd)
+            if remaining <= 0.10:
+                self.state["in_recovery"] = False
+                self.state["deficit_usd"] = 0.0
+                self.state["loss_streak"] = 0
+                log.info("Deficit recovered. Returning to standard parameters.")
             else:
-                del self.memory["banned_patterns"][key]
-                self._save_memory()
+                self.state["deficit_usd"] = round(remaining, 2)
+        else:
+            self.state["loss_streak"] = 0
+        self._write_disk()
 
-        # Check Daily Circuit Breaker (2 consecutive losses on same pair)
-        stats = self.memory["pair_stats"].get(symbol, {})
-        if stats.get("consecutive_losses", 0) >= 2:
-            if now - stats.get("last_loss", 0) < 43200:  # 12-hour cool-off
-                return False, f"Circuit Breaker: {symbol} has 2 consecutive losses. Cooldown active."
-            else:
-                stats["consecutive_losses"] = 0
-                self._save_memory()
+    def check_permission(self, symbol: str, direction: str, current_adx: float) -> tuple[bool, str, dict]:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        pattern_id = f"{symbol}_{direction.upper()}"
 
-        return True, "OK"
+        # Clean up expired bans
+        expired_keys = [
+            k for k, v in self.state["locked_directions"].items()
+            if now_ts >= v.get("expires", 0)
+        ]
+        for k in expired_keys:
+            del self.state["locked_directions"][k]
+        if expired_keys:
+            self._write_disk()
+
+        # Check active directional ban
+        if pattern_id in self.state["locked_directions"]:
+            entry = self.state["locked_directions"][pattern_id]
+            mins_left = int((entry["expires"] - now_ts) / 60)
+            return False, f"Blocked by Loss Memory ({mins_left}m left)", {}
+
+        # Daily circuit breaker on 3 consecutive losses
+        if self.state.get("loss_streak", 0) >= 3:
+            return False, "Circuit Breaker: 3 consecutive losses reached", {}
+
+        meta = {
+            "recovery_active": self.state.get("in_recovery", False),
+            "deficit_usd": self.state.get("deficit_usd", 0.0)
+        }
+        return True, "Allowed", meta

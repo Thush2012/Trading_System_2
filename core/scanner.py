@@ -1,283 +1,217 @@
 import os
-import logging
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
+import pytz
 from core.logger import setup_system_logger
 from core.loss_memory import LossMemoryEngine
 
 try:
     import MetaTrader5 as mt5
-    MT5_AVAILABLE = True
+    HAS_MT5 = True
 except ImportError:
-    MT5_AVAILABLE = False
+    HAS_MT5 = False
 
-log = setup_system_logger("ForexScanner")
-memory_engine = LossMemoryEngine()
+log = setup_system_logger("CloudAnalyzer")
+memory_guard = LossMemoryEngine()
 
-# Proven high-expectancy pairs
 FOREX_MARKETS = {
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 1.8},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 2.0},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 1.8},
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread_pips": 1.8},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread_pips": 2.6},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 1.8},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 1.8},
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 1.8},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.6},
 }
 
 class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_period_sec = 2400
-        self.min_target_pips = 16.0
+        self.cooldown_sec = 2400
+        self.min_tp_pips = 15.0
+        self.slt_tz = pytz.timezone("Asia/Colombo")
+        self.start_hour = 13.5  # 1:30 PM SLT
+        self.end_hour = 21.5    # 9:30 PM SLT
         self.mt5_initialized = False
-        self.init_mt5_terminal()
+        self._connect_mt5()
 
-    def init_mt5_terminal(self):
-        if not MT5_AVAILABLE:
+    def _connect_mt5(self):
+        # Prevent MT5 initialization on Saturday (5) and Sunday (6)
+        if datetime.now(self.slt_tz).weekday() >= 5:
             return
-        if mt5.initialize():
+        if HAS_MT5 and mt5.initialize():
             self.mt5_initialized = True
-            log.info("Live MT5 Terminal connected. Direct institutional data feed active.")
-        else:
-            self.mt5_initialized = False
+            log.info("MT5 Live Feed active.")
 
     def is_within_trading_window(self) -> bool:
-        return datetime.now(timezone.utc).weekday() < 5
+        """Checks if current time in Sri Lanka is Mon-Fri between 1:30 PM and 9:30 PM."""
+        now_slt = datetime.now(self.slt_tz)
+        if now_slt.weekday() >= 5:
+            return False
+        dec_hour = now_slt.hour + (now_slt.minute / 60.0)
+        return self.start_hour <= dec_hour <= self.end_hour
 
-    def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-        high = df["High"]
-        low = df["Low"]
-        close = df["Close"].shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - close).abs(),
-            (low - close).abs()
-        ], axis=1).max(axis=1)
+    def _calc_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        h, l, c_prev = df["High"], df["Low"], df["Close"].shift(1)
+        tr = pd.concat([h - l, (h - c_prev).abs(), (l - c_prev).abs()], axis=1).max(axis=1)
         return tr.rolling(window=period).mean()
 
-    def calculate_rsi(self, series: pd.Series, period: int = 14) -> pd.Series:
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / (loss + 1e-9)
-        return 100 - (100 / (1 + rs))
+    def _calc_rsi(self, s: pd.Series, period: int = 14) -> pd.Series:
+        diff = s.diff()
+        up = diff.where(diff > 0, 0.0).rolling(window=period).mean()
+        dn = (-diff.where(diff < 0, 0.0)).rolling(window=period).mean()
+        rs = up / (dn + 1e-9)
+        return 100.0 - (100.0 / (1.0 + rs))
 
-    def calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-        high = df["High"]
-        low = df["Low"]
-        close = df["Close"]
-
-        plus_dm = high.diff()
-        minus_dm = low.diff().abs() * -1
-        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-        minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-
-        tr = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low - close.shift(1)).abs()
-        ], axis=1).max(axis=1)
-
-        atr = tr.rolling(window=period).mean()
-        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=period).mean() / (atr + 1e-9))
-        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=period).mean() / (atr + 1e-9))
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+    def _calc_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        h, l = df["High"], df["Low"]
+        up_move = h.diff()
+        dn_move = l.diff().abs() * -1.0
+        plus_dm = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+        atr = self._calc_atr(df, period)
+        p_di = 100.0 * (pd.Series(plus_dm, index=df.index).rolling(period).mean() / (atr + 1e-9))
+        m_di = 100.0 * (pd.Series(minus_dm, index=df.index).rolling(period).mean() / (atr + 1e-9))
+        dx = 100.0 * (p_di - m_di).abs() / (p_di + m_di + 1e-9)
         return dx.rolling(window=period).mean()
 
-    def fetch_mt5_data(self, symbol: str, timeframe, count: int) -> pd.DataFrame:
-        if not self.mt5_initialized:
-            return pd.DataFrame()
-        suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
-        broker_symbol = f"{symbol}{suffix}"
-        mt5.symbol_select(broker_symbol, True)
-        rates = mt5.copy_rates_from_pos(broker_symbol, timeframe, 0, count)
-        if rates is None or len(rates) == 0:
-            return pd.DataFrame()
-        df = pd.DataFrame(rates)
-        df["time"] = pd.to_datetime(df["time"], unit="s")
-        df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "tick_volume": "Volume"}, inplace=True)
-        return df
-
-    def fetch_data(self, symbol: str, ticker: str, interval: str, count: int) -> pd.DataFrame:
-        if self.mt5_initialized:
-            tf = mt5.TIMEFRAME_M15 if interval == "15m" else mt5.TIMEFRAME_H1
-            df = self.fetch_mt5_data(symbol, tf, count)
-            if not df.empty and len(df) >= 205:
+    def _get_candles(self, symbol: str, ticker: str, tf: str) -> pd.DataFrame:
+        if self.mt5_initialized and datetime.now(self.slt_tz).weekday() < 5:
+            mt5_tf = mt5.TIMEFRAME_M15 if tf == "15m" else mt5.TIMEFRAME_H1
+            sfx = os.getenv("MT5_SYMBOL_SUFFIX", "")
+            rates = mt5.copy_rates_from_pos(f"{symbol}{sfx}", mt5_tf, 0, 240)
+            if rates is not None and len(rates) >= 205:
+                df = pd.DataFrame(rates)
+                df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
                 return df
-
         try:
-            period = "5d" if interval == "15m" else "1mo"
-            df = yf.download(ticker, period=period, interval=interval, progress=False)
-            if df.empty:
-                return pd.DataFrame()
-            if isinstance(df.columns, pd.MultiIndex):
+            p = "5d" if tf == "15m" else "1mo"
+            df = yf.download(ticker, period=p, interval=tf, progress=False)
+            if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
-        except Exception as e:
-            log.error(f"Data fetch error ({ticker} - {interval}): {e}")
+        except Exception as err:
+            log.error(f"Data fetch error on {symbol}: {err}")
             return pd.DataFrame()
 
-    def get_live_spread_pips(self, symbol: str, pip_size: float) -> float:
-        if not self.mt5_initialized:
-            return 1.2
-        suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
-        info = mt5.symbol_info(f"{symbol}{suffix}")
-        if info:
-            return round(info.spread * info.point / pip_size, 1)
-        return 1.2
-
-    def evaluate_pair(self, symbol: str, meta: dict) -> dict:
-        ticker = meta["ticker"]
-        pip_size = meta["pip_size"]
-        digits = meta["digits"]
-
-        current_spread = self.get_live_spread_pips(symbol, pip_size)
-        if current_spread > meta.get("max_spread_pips", 2.0):
+    def evaluate_pair(self, symbol: str, meta: dict) -> dict | None:
+        df_m15 = self._get_candles(symbol, meta["ticker"], "15m")
+        df_h1 = self._get_candles(symbol, meta["ticker"], "1h")
+        if len(df_m15) < 205 or len(df_h1) < 205:
             return None
 
-        df_m15 = self.fetch_data(symbol, ticker, "15m", 250)
-        df_h1 = self.fetch_data(symbol, ticker, "1h", 250)
-        if df_m15.empty or len(df_m15) < 210 or df_h1.empty or len(df_h1) < 205:
-            return None
-
-        # 1. Macro Trend: H1 200 EMA + 50 EMA Slope
+        # H1 Macro Trend
         df_h1["EMA200"] = df_h1["Close"].ewm(span=200, adjust=False).mean()
         df_h1["EMA50"] = df_h1["Close"].ewm(span=50, adjust=False).mean()
-        h1_ema200 = float(df_h1["EMA200"].iloc[-1])
-        h1_ema50 = float(df_h1["EMA50"].iloc[-1])
-        h1_close = float(df_h1["Close"].iloc[-1])
+        h1_c = float(df_h1["Close"].iloc[-1])
+        h1_e200 = float(df_h1["EMA200"].iloc[-1])
+        h1_e50 = float(df_h1["EMA50"].iloc[-1])
 
-        # 2. M15 Indicators
+        # M15 Structure
         df_m15["EMA200"] = df_m15["Close"].ewm(span=200, adjust=False).mean()
         df_m15["EMA50"] = df_m15["Close"].ewm(span=50, adjust=False).mean()
         df_m15["EMA20"] = df_m15["Close"].ewm(span=20, adjust=False).mean()
-        df_m15["RSI"] = self.calculate_rsi(df_m15["Close"], period=14)
-        df_m15["ADX"] = self.calculate_adx(df_m15, period=14)
-        df_m15["ATR"] = self.calculate_atr(df_m15, period=14)
+        df_m15["RSI"] = self._calc_rsi(df_m15["Close"])
+        df_m15["ADX"] = self._calc_adx(df_m15)
+        df_m15["ATR"] = self._calc_atr(df_m15)
 
         curr = df_m15.iloc[-1]
         prev = df_m15.iloc[-2]
-
-        price = float(curr["Close"])
-        open_price = float(curr["Open"])
-        low_price = float(curr["Low"])
-        high_price = float(curr["High"])
-
-        m15_ema200 = float(curr["EMA200"])
-        ema50 = float(curr["EMA50"])
-        ema20 = float(curr["EMA20"])
-        rsi = float(curr["RSI"])
-        adx_curr = float(curr["ADX"])
-        adx_prev = float(prev["ADX"])
+        price, open_p = float(curr["Close"]), float(curr["Open"])
+        high_p, low_p = float(curr["High"]), float(curr["Low"])
         atr = float(curr["ATR"])
+        adx_now, adx_prev = float(curr["ADX"]), float(prev["ADX"])
+        rsi = float(curr["RSI"])
+        e200, e50, e20 = float(curr["EMA200"]), float(curr["EMA50"]), float(curr["EMA20"])
 
-        # Stricter momentum threshold
-        if adx_curr < 25.0 or adx_curr < adx_prev or np.isnan(atr) or atr == 0:
+        # News Spike / Volatility Anomaly Shield: Skip if current bar is > 2.8x normal ATR
+        bar_range = high_p - low_p
+        if np.isnan(atr) or atr <= 0 or bar_range > (2.8 * atr):
             return None
 
-        body_size = abs(price - open_price)
-        candle_range = max(high_price - low_price, 1e-9)
-        lower_wick = min(open_price, price) - low_price
-        upper_wick = high_price - max(open_price, price)
+        direction = None
+        if h1_c > h1_e200 and h1_e50 > h1_e200 and price > e200 and e20 > e50:
+            if 50 <= rsi <= 65 and price > open_p and abs(low_p - e20) <= (0.55 * atr):
+                direction = "BUY"
+        elif h1_c < h1_e200 and h1_e50 < h1_e200 and price < e200 and e20 < e50:
+            if 35 <= rsi <= 50 and price < open_p and abs(high_p - e20) <= (0.55 * atr):
+                direction = "SELL"
 
-        action = None
-
-        # BUY: Confirmed Uptrend on H1 & M15 + Rejection of EMA 20
-        if h1_close > h1_ema200 and h1_ema50 > h1_ema200 and price > m15_ema200 and ema20 > ema50:
-            if 50 <= rsi <= 65 and price > open_price:
-                if abs(low_price - ema20) <= (0.5 * atr) or low_price <= ema20:
-                    if lower_wick >= (0.30 * candle_range) or body_size >= (0.55 * candle_range):
-                        action = "BUY"
-
-        # SELL: Confirmed Downtrend on H1 & M15 + Rejection of EMA 20
-        elif h1_close < h1_ema200 and h1_ema50 < h1_ema200 and price < m15_ema200 and ema20 < ema50:
-            if 35 <= rsi <= 50 and price < open_price:
-                if abs(high_price - ema20) <= (0.5 * atr) or high_price >= ema20:
-                    if upper_wick >= (0.30 * candle_range) or body_size >= (0.55 * candle_range):
-                        action = "SELL"
-
-        if not action:
+        if not direction:
             return None
 
-        # 3. Check Loss Memory (Prevents repeating recent failed setups)
-        allowed, reason = memory_engine.is_setup_allowed(symbol, action, adx_curr)
+        # Check Loss Memory & Recovery Status
+        allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
-            log.info(f"Filtered {symbol} {action} by Memory Engine: {reason}")
+            log.info(f"Skipped {symbol} {direction}: {reason}")
             return None
 
-        # 4. Asymmetric Risk-to-Reward: SL = 1.2 * ATR | TP = 1.6 * ATR
-        sl_distance = 1.2 * atr
-        tp_distance = 1.6 * atr
+        in_recovery = rec_meta.get("recovery_active", False)
+        min_adx_req = 28.0 if in_recovery else 25.0
 
-        sl_pips = round(sl_distance / pip_size, 1)
-        tp_pips = round(tp_distance / pip_size, 1)
-
-        if tp_pips < self.min_target_pips:
+        if adx_now < min_adx_req or adx_now < adx_prev:
             return None
 
-        entry_low = round(min(price, open_price), digits)
-        entry_high = round(max(price, open_price), digits)
+        # Asymmetric R:R (Boosted in Recovery Mode)
+        sl_mult = 1.2
+        tp_mult = 2.0 if in_recovery else 1.6
 
-        if action == "BUY":
-            sl = round(price - sl_distance, digits)
-            tp = round(price + tp_distance, digits)
-        else:
-            sl = round(price + sl_distance, digits)
-            tp = round(price - tp_distance, digits)
+        sl_dist = sl_mult * atr
+        tp_dist = tp_mult * atr
+        pip_sz = meta["pip_size"]
+        dig = meta["digits"]
 
-        source_name = "Live MT5" if self.mt5_initialized else "Web Feed"
+        sl_pips = round(sl_dist / pip_sz, 1)
+        tp_pips = round(tp_dist / pip_sz, 1)
+        if tp_pips < self.min_tp_pips:
+            return None
+
+        sl_val = round(price - sl_dist if direction == "BUY" else price + sl_dist, dig)
+        tp_val = round(price + tp_dist if direction == "BUY" else price - tp_dist, dig)
+
+        mode_label = "RECOVERY_2.0R" if in_recovery else "STANDARD_1.6R"
 
         return {
             "symbol": symbol,
-            "action": action,
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-            "current_price": round(price, digits),
-            "sl": sl,
-            "tp": tp,
-            "tp1": tp,
-            "tp2": round(price + (2.4 * atr) if action == "BUY" else price - (2.4 * atr), digits),
-            "tp3": round(price + (3.2 * atr) if action == "BUY" else price - (3.2 * atr), digits),
+            "action": direction,
+            "entry_low": round(min(price, open_p), dig),
+            "entry_high": round(max(price, open_p), dig),
+            "current_price": round(price, dig),
+            "sl": sl_val,
+            "tp": tp_val,
+            "tp1": tp_val,
+            "tp2": round(price + (2.5 * atr) if direction == "BUY" else price - (2.5 * atr), dig),
+            "tp3": round(price + (3.2 * atr) if direction == "BUY" else price - (3.2 * atr), dig),
             "sl_pips": sl_pips,
             "tp_pips": tp_pips,
-            "risk_reward": "1:1.33",
-            "spread_pips": current_spread,
             "rsi": round(rsi, 1),
-            "adx": round(adx_curr, 1),
-            "atr": atr,
-            "source": source_name,
-            "setup": "H1_M15_ASYMMETRIC_REJECTION",
+            "adx": round(adx_now, 1),
+            "setup": mode_label,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         }
 
     async def scan_all(self, bypass_cooldown: bool = False, enforce_window: bool = True) -> pd.DataFrame:
-        if enforce_window and not self.is_within_trading_window():
-            log.info("Weekend rollover. Scanner standby.")
-            return pd.DataFrame()
+        # 24/7 data analysis runs first to keep memory/logs warm
+        discovered = []
+        now_ts = datetime.now(timezone.utc).timestamp()
 
-        results = []
-        now = datetime.now(timezone.utc).timestamp()
-
-        for symbol, meta in self.market_map.items():
-            if not bypass_cooldown:
-                last_time = self.cooldowns.get(symbol, 0)
-                if now - last_time < self.cooldown_period_sec:
+        for sym, meta in self.market_map.items():
+            if not bypass_cooldown and (now_ts - self.cooldowns.get(sym, 0)) < self.cooldown_sec:
+                continue
+            sig = self.evaluate_pair(sym, meta)
+            if sig:
+                # Only dispatch executable signals inside the 1:30 PM - 9:30 PM SLT window (Mon-Fri)
+                if enforce_window and not self.is_within_trading_window():
+                    log.info(f"Analyzed {sym} {sig['action']} setup outside trading hours (Standby).")
                     continue
+                self.cooldowns[sym] = now_ts
+                discovered.append(sig)
 
-            signal = self.evaluate_pair(symbol, meta)
-            if signal:
-                self.cooldowns[symbol] = now
-                results.append(signal)
-
-        return pd.DataFrame(results) if results else pd.DataFrame()
+        return pd.DataFrame(discovered) if discovered else pd.DataFrame()
 
     async def close(self):
-        if self.mt5_initialized:
-            try:
-                mt5.shutdown()
-            except Exception:
-                pass
+        if self.mt5_initialized and HAS_MT5:
+            mt5.shutdown()
 
 Scanner = LightweightScanner
