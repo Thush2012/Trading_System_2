@@ -6,3 +6,4 @@ python-dotenv
 python-telegram-bot
 APScheduler==3.10.4
 pytz
+supabase
