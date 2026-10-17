@@ -2729,3 +2729,4 @@ AttributeError: 'RiskManager' object has no attribute 'evaluate_forex_stake'
 [2026-10-14 07:37:17] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-14 07:37:52] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-14 07:38:27] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-17 07:29:36] [INFO] (MasterEngine) Supabase signal queue connected.
