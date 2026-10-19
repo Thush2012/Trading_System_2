@@ -18,6 +18,7 @@ MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
 SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
+MT5_PATH = os.getenv("MT5_PATH", "")
 
 LOT_SIZE = 0.01
 MAX_OPEN_POSITIONS = 2
@@ -68,6 +69,7 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
     return True, "OK", daily_net
 
 def resolve_filling_mode(symbol: str) -> int:
+    """Detects broker-supported filling type to avoid retcode 10030 rejections."""
     sym_info = mt5.symbol_info(symbol)
     if not sym_info:
         return mt5.ORDER_FILLING_IOC
@@ -79,22 +81,28 @@ def resolve_filling_mode(symbol: str) -> int:
     return mt5.ORDER_FILLING_RETURN
 
 def initialize_terminal() -> bool:
-    # Do not initialize MT5 on weekends
+    """Connects to the active MT5 terminal using the path specified in .env or auto-detects."""
     if datetime.now(LOCAL_TZ).weekday() >= 5:
         log.info("Today is Saturday/Sunday. MT5 initialization skipped to respect weekend guard.")
         return False
 
-    if not mt5.initialize():
+    success = False
+    if MT5_PATH:
+        log.info(f"Initializing MT5 using path from .env: {MT5_PATH}")
+        success = mt5.initialize(
+            path=MT5_PATH,
+            login=MT5_ACCOUNT if MT5_ACCOUNT else None,
+            password=MT5_PASSWORD if MT5_PASSWORD else None,
+            server=MT5_SERVER if MT5_SERVER else None
+        )
+    else:
+        success = mt5.initialize()
+        if success and MT5_ACCOUNT and MT5_PASSWORD and MT5_SERVER:
+            mt5.login(login=MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER)
+
+    if not success:
         log.error(f"MT5 terminal initialization failed: {mt5.last_error()}")
         return False
-
-    if MT5_ACCOUNT and MT5_PASSWORD and MT5_SERVER:
-        current_acc = mt5.account_info()
-        if not current_acc or current_acc.login != MT5_ACCOUNT:
-            authorized = mt5.login(login=MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER)
-            if not authorized:
-                log.error(f"Failed to log into MT5 account #{MT5_ACCOUNT}: {mt5.last_error()}")
-                return False
 
     t_info = mt5.terminal_info()
     if not t_info.trade_allowed:
@@ -114,13 +122,11 @@ def initialize_terminal() -> bool:
     return True
 
 def process_trade_signal(sig: dict) -> tuple[bool, str | int]:
-    # 1. Enforce Weekday & 1:30 PM - 9:30 PM SLT Window
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         log.warning(f"Skipped execution: {window_msg}")
         return False, f"WINDOW_LOCK: {window_msg}"
 
-    # 2. Enforce Daily $3-$5 Profit Target Lock & Max Loss Cap
     pnl_allowed, pnl_reason, current_pnl = check_daily_pnl_limits()
     if not pnl_allowed:
         log.info(f"Trade skipped: {pnl_reason}")
@@ -137,13 +143,11 @@ def process_trade_signal(sig: dict) -> tuple[bool, str | int]:
     if not sym_info:
         return False, "SYMBOL_INFO_UNAVAILABLE"
 
-    # 3. Block duplicate position on the same pair
     pair_positions = mt5.positions_get(symbol=broker_symbol)
     if pair_positions and len(pair_positions) > 0:
         log.warning(f"Position already active on {broker_symbol}. Skipping duplicate.")
         return False, "DUPLICATE_POSITION"
 
-    # 4. Enforce max concurrent open trades
     total_positions = mt5.positions_get()
     if total_positions and len(total_positions) >= MAX_OPEN_POSITIONS:
         log.warning(f"Max concurrent open positions reached ({len(total_positions)}/{MAX_OPEN_POSITIONS}).")
@@ -205,7 +209,6 @@ def run_executor():
 
     while True:
         try:
-            # Skip polling MT5 on weekends
             if datetime.now(LOCAL_TZ).weekday() >= 5:
                 time.sleep(60)
                 continue
@@ -241,7 +244,7 @@ def run_executor():
             mt5.shutdown()
             break
         except Exception as err:
-            log.error(f"Execution loop error: {err}")
+            log.error(f"Execution loop exception: {err}")
             time.sleep(5)
 
 if __name__ == "__main__":
