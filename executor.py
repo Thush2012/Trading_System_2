@@ -23,29 +23,32 @@ MT5_PATH = os.getenv("MT5_PATH", "")
 LOT_SIZE = 0.01
 MAX_OPEN_POSITIONS = 2
 
-# Daily Profit Target & Risk Caps (in USD)
-DAILY_PROFIT_TARGET_USD = 4.00   # Locks in your $3 - $5 daily target
-DAILY_MAX_LOSS_CAP_USD = -3.00   # Stops trading for the day if down -$3.00
+DAILY_PROFIT_TARGET_USD = 4.00
+DAILY_MAX_LOSS_CAP_USD = -3.00
 
-# Sri Lanka Time Window Configuration
+# Sri Lanka Time Window Configuration (Morning to Night, minus Power Cut)
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
-WINDOW_START_HOUR = 13.5  # 1:30 PM SLT
-WINDOW_END_HOUR = 21.5    # 9:30 PM SLT
 
 def is_execution_window_active() -> tuple[bool, str]:
-    """Ensures orders only execute Mon-Fri between 1:30 PM and 9:30 PM SLT."""
+    """Ensures orders execute Mon-Fri from 8:00 AM to 9:30 PM SLT, blocking 6:30-8:30 PM power cut."""
     now = datetime.now(LOCAL_TZ)
     if now.weekday() >= 5:
         return False, "Weekend Standby (Saturday/Sunday)."
 
     current_decimal_hour = now.hour + (now.minute / 60.0)
-    if not (WINDOW_START_HOUR <= current_decimal_hour <= WINDOW_END_HOUR):
-        return False, f"Outside trading hours ({now.strftime('%I:%M %p')} SLT). Active: 1:30 PM - 9:30 PM."
+    
+    is_in_span = 8.0 <= current_decimal_hour <= 21.5
+    is_power_cut = 18.5 <= current_decimal_hour <= 20.5
+
+    if not is_in_span:
+        return False, f"Outside trading hours ({now.strftime('%I:%M %p')} SLT). Active: 8:00 AM - 6:30 PM & 8:30 PM - 9:30 PM."
+    
+    if is_power_cut:
+        return False, f"Power cut blackout active ({now.strftime('%I:%M %p')} SLT - No Power/Wi-Fi)."
 
     return True, "Window Active"
 
 def check_daily_pnl_limits() -> tuple[bool, str, float]:
-    """Calculates today's closed MT5 profit/loss and checks if daily target or max loss is reached."""
     now = datetime.now()
     start_of_day = datetime.combine(now.date(), dt_time.min)
 
@@ -69,7 +72,6 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
     return True, "OK", daily_net
 
 def resolve_filling_mode(symbol: str) -> int:
-    """Detects broker-supported filling type to avoid retcode 10030 rejections."""
     sym_info = mt5.symbol_info(symbol)
     if not sym_info:
         return mt5.ORDER_FILLING_IOC
@@ -81,7 +83,6 @@ def resolve_filling_mode(symbol: str) -> int:
     return mt5.ORDER_FILLING_RETURN
 
 def initialize_terminal() -> bool:
-    """Connects to the active MT5 terminal using the path specified in .env or auto-detects."""
     if datetime.now(LOCAL_TZ).weekday() >= 5:
         log.info("Today is Saturday/Sunday. MT5 initialization skipped to respect weekend guard.")
         return False
@@ -203,7 +204,7 @@ def run_executor():
         return
 
     log.info(
-        f"Executor polling Supabase | Window: 1:30 PM - 9:30 PM SLT | "
+        f"Executor polling Supabase | Window: 8:00 AM - 6:30 PM & 8:30 PM - 9:30 PM SLT | "
         f"Daily Target Lock: +${DAILY_PROFIT_TARGET_USD:.2f}"
     )
 

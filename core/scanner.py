@@ -31,8 +31,6 @@ class LightweightScanner:
         self.cooldown_sec = 2400
         self.min_tp_pips = 15.0
         self.slt_tz = pytz.timezone("Asia/Colombo")
-        self.start_hour = 13.5  # 1:30 PM SLT
-        self.end_hour = 21.5    # 9:30 PM SLT
         self.mt5_initialized = False
         self._connect_mt5()
 
@@ -44,11 +42,19 @@ class LightweightScanner:
             log.info("MT5 Live Feed active.")
 
     def is_within_trading_window(self) -> bool:
+        """Active Mon-Fri from 8:00 AM to 9:30 PM SLT, excluding the 6:30 - 8:30 PM power cut."""
         now_slt = datetime.now(self.slt_tz)
         if now_slt.weekday() >= 5:
             return False
         dec_hour = now_slt.hour + (now_slt.minute / 60.0)
-        return self.start_hour <= dec_hour <= self.end_hour
+        
+        # Overall trading span: 8:00 AM (8.0) to 9:30 PM (21.5)
+        is_in_span = 8.0 <= dec_hour <= 21.5
+        
+        # Power cut blackout: 6:30 PM (18.5) to 8:30 PM (20.5)
+        is_power_cut = 18.5 <= dec_hour <= 20.5
+        
+        return is_in_span and not is_power_cut
 
     def _calc_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         h, l, c_prev = df["High"], df["Low"], df["Close"].shift(1)
@@ -99,14 +105,12 @@ class LightweightScanner:
         if len(df_m15) < 205 or len(df_h1) < 205:
             return None
 
-        # H1 Macro Trend
         df_h1["EMA200"] = df_h1["Close"].ewm(span=200, adjust=False).mean()
         df_h1["EMA50"] = df_h1["Close"].ewm(span=50, adjust=False).mean()
         h1_c = float(df_h1["Close"].iloc[-1])
         h1_e200 = float(df_h1["EMA200"].iloc[-1])
         h1_e50 = float(df_h1["EMA50"].iloc[-1])
 
-        # M15 Structure
         df_m15["EMA200"] = df_m15["Close"].ewm(span=200, adjust=False).mean()
         df_m15["EMA50"] = df_m15["Close"].ewm(span=50, adjust=False).mean()
         df_m15["EMA20"] = df_m15["Close"].ewm(span=20, adjust=False).mean()
@@ -126,9 +130,8 @@ class LightweightScanner:
         if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (2.8 * atr):
             return None
 
-        # Fetch Self-Learned Pair Parameters from Memory Engine
         pair_rules = memory_guard.get_pair_rules(symbol)
-        pullback_limit = pair_rules["pullback_atr"]  # Evolves dynamically based on past losses
+        pullback_limit = pair_rules["pullback_atr"]
 
         direction = None
         if h1_c > h1_e200 and h1_e50 > h1_e200 and price > e200 and e20 > e50:
@@ -141,7 +144,6 @@ class LightweightScanner:
         if not direction:
             return None
 
-        # Check Loss Memory & Learned Thresholds
         allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
             log.info(f"Skipped {symbol} {direction}: {reason}")
@@ -149,8 +151,6 @@ class LightweightScanner:
 
         in_recovery = rec_meta.get("recovery_active", False)
         learned_min_adx = rec_meta.get("learned_min_adx", pair_rules["min_adx"])
-
-        # Recovery mode boosts the ADX requirement higher for safety
         final_adx_threshold = learned_min_adx + 3.0 if in_recovery else learned_min_adx
 
         if adx_now < final_adx_threshold or adx_now < adx_prev:
@@ -171,7 +171,6 @@ class LightweightScanner:
 
         sl_val = round(price - sl_dist if direction == "BUY" else price + sl_dist, dig)
         tp_val = round(price + tp_dist if direction == "BUY" else price - tp_dist, dig)
-
         mode_label = f"ADX>={final_adx_threshold:.1f} (RECOVERY)" if in_recovery else f"ADX>={final_adx_threshold:.1f} (LEARNED)"
 
         return {
