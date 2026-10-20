@@ -14,7 +14,8 @@ from telegram_bot import (
     cmd_trading_hours,
     cmd_risk_rules,
     handle_button_press,
-    format_signal_message,
+    format_detailed_signal,
+    format_friend_signal,
     global_scanner
 )
 
@@ -57,7 +58,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
     """24/7 Background Loop: Evaluates active trades, updates loss memory, and alerts Telegram."""
     try:
-        # 1. Evaluate open trades against live prices (Updates Loss Memory & Recovery state)
         trade_updates = tracker.evaluate_active_trades()
         for event in trade_updates:
             await context.bot.send_message(
@@ -67,12 +67,10 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
             )
             log.info(f"Trade outcome recorded for {event['symbol']}: {event['type']}")
 
-        # 2. Enforce portfolio exposure limit
         if get_open_trade_count(tracker) >= MAX_CONCURRENT_OPEN_TRADES:
             log.info("Max concurrent trades active. Skipping new signal dispatch.")
             return
 
-        # 3. Run market scan (enforce_window=True ensures alerts fire Mon-Fri during trading windows)
         report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
         if not report.empty:
             for _, row in report.iterrows():
@@ -80,20 +78,19 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     break
 
                 sig_dict = row.to_dict()
-                msg = format_signal_message(sig_dict)
 
-                # Send manual execution alert to Telegram
-                await context.bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=msg,
-                    parse_mode="Markdown"
-                )
+                # Send Message 1: Detailed Style
+                detailed_msg = format_detailed_signal(sig_dict)
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=detailed_msg, parse_mode="Markdown")
 
-                # Register trade in tracker so it monitors SL/TP milestones and feeds Loss Memory
+                # Send Message 2: Friend Share Style
+                friend_msg = format_friend_signal(sig_dict)
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=friend_msg, parse_mode="Markdown")
+
                 ticker = global_scanner.market_map.get(sig_dict["symbol"], {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(sig_dict, ticker)
-                log.info(f"Manual signal dispatched for {sig_dict['symbol']}.")
+                log.info(f"Manual dual signal dispatched for {sig_dict['symbol']}.")
 
     except Exception as err:
         log.error(f"Background loop error: {err}")
@@ -104,7 +101,7 @@ async def post_init_hook(application):
     startup_msg = (
         "💎 *Manual Trading & Memory Engine Online*\n\n"
         f"• *Boot Time:* `{now_slt}`\n"
-        "• *Execution Mode:* 100% Manual Input (Alerts to Telegram)\n"
+        "• *Execution Mode:* 100% Manual Input (Dual Telegram Format)\n"
         "• *Loss Memory:* Active (Tracks outcomes & evolves pair rules)\n"
         "• *Target Model:* Asymmetric 1.6R / 2.0R Recovery Payoff"
     )
@@ -137,7 +134,7 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(
             scheduled_scan_job,
-            interval=900,  # 15 minutes
+            interval=900,
             first=20
         )
         log.info("Background scan schedule registered.")
