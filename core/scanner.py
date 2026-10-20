@@ -13,7 +13,7 @@ try:
 except ImportError:
     HAS_MT5 = False
 
-log = setup_system_logger("CloudAnalyzer")
+log = setup_system_logger("MultiTFScanner")
 memory_guard = LossMemoryEngine()
 
 FOREX_MARKETS = {
@@ -24,12 +24,36 @@ FOREX_MARKETS = {
     "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.6},
 }
 
+# Multi-Timeframe Definitions & Scaling Rules
+TIMEFRAME_CONFIG = {
+    "5m": {
+        "macro_tf": "15m",
+        "min_pips": 8.0,
+        "sl_mult": 1.3,
+        "tp_mult": 1.5,
+        "desc": "SCALP"
+    },
+    "15m": {
+        "macro_tf": "1h",
+        "min_pips": 15.0,
+        "sl_mult": 1.2,
+        "tp_mult": 1.6,
+        "desc": "INTRADAY"
+    },
+    "1h": {
+        "macro_tf": "1d",
+        "min_pips": 25.0,
+        "sl_mult": 1.5,
+        "tp_mult": 2.2,
+        "desc": "MACRO"
+    }
+}
+
 class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_sec = 2400
-        self.min_tp_pips = 15.0
+        self.cooldown_sec = 900  # 15-min cooldown per symbol/timeframe combo
         self.slt_tz = pytz.timezone("Asia/Colombo")
         self.mt5_initialized = False
         self._connect_mt5()
@@ -39,19 +63,16 @@ class LightweightScanner:
             return
         if HAS_MT5 and mt5.initialize():
             self.mt5_initialized = True
-            log.info("MT5 Live Feed active.")
+            log.info("MT5 Live Feed active for Multi-TF scanner.")
 
     def is_within_trading_window(self) -> bool:
-        """Active Mon-Fri from 8:00 AM to 9:30 PM SLT, excluding the 6:30 - 8:30 PM power cut."""
+        """Active Mon-Fri from 8:00 AM to 9:30 PM SLT, excluding 6:30 - 8:30 PM power cut."""
         now_slt = datetime.now(self.slt_tz)
         if now_slt.weekday() >= 5:
             return False
         dec_hour = now_slt.hour + (now_slt.minute / 60.0)
         
-        # Overall trading span: 8:00 AM (8.0) to 9:30 PM (21.5)
         is_in_span = 8.0 <= dec_hour <= 21.5
-        
-        # Power cut blackout: 6:30 PM (18.5) to 8:30 PM (20.5)
         is_power_cut = 18.5 <= dec_hour <= 20.5
         
         return is_in_span and not is_power_cut
@@ -82,99 +103,106 @@ class LightweightScanner:
 
     def _get_candles(self, symbol: str, ticker: str, tf: str) -> pd.DataFrame:
         if self.mt5_initialized and datetime.now(self.slt_tz).weekday() < 5:
-            mt5_tf = mt5.TIMEFRAME_M15 if tf == "15m" else mt5.TIMEFRAME_H1
+            tf_map = {
+                "5m": mt5.TIMEFRAME_M5,
+                "15m": mt5.TIMEFRAME_M15,
+                "1h": mt5.TIMEFRAME_H1,
+                "1d": mt5.TIMEFRAME_D1
+            }
+            mt5_tf = tf_map.get(tf, mt5.TIMEFRAME_M15)
             sfx = os.getenv("MT5_SYMBOL_SUFFIX", "")
             rates = mt5.copy_rates_from_pos(f"{symbol}{sfx}", mt5_tf, 0, 240)
-            if rates is not None and len(rates) >= 205:
+            if rates is not None and len(rates) >= 150:
                 df = pd.DataFrame(rates)
                 df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
                 return df
         try:
-            p = "5d" if tf == "15m" else "1mo"
-            df = yf.download(ticker, period=p, interval=tf, progress=False)
+            p_map = {"5m": "3d", "15m": "5d", "1h": "1mo", "1d": "1y"}
+            df = yf.download(ticker, period=p_map.get(tf, "1mo"), interval=tf, progress=False)
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
         except Exception as err:
-            log.error(f"Data fetch error on {symbol}: {err}")
+            log.error(f"Data fetch error on {symbol} ({tf}): {err}")
             return pd.DataFrame()
 
-    def evaluate_pair(self, symbol: str, meta: dict) -> dict | None:
-        df_m15 = self._get_candles(symbol, meta["ticker"], "15m")
-        df_h1 = self._get_candles(symbol, meta["ticker"], "1h")
-        if len(df_m15) < 205 or len(df_h1) < 205:
+    def evaluate_timeframe(self, symbol: str, meta: dict, tf: str) -> dict | None:
+        cfg = TIMEFRAME_CONFIG[tf]
+        macro_tf = cfg["macro_tf"]
+
+        df_base = self._get_candles(symbol, meta["ticker"], tf)
+        df_macro = self._get_candles(symbol, meta["ticker"], macro_tf)
+        if len(df_base) < 140 or len(df_macro) < 100:
             return None
 
-        df_h1["EMA200"] = df_h1["Close"].ewm(span=200, adjust=False).mean()
-        df_h1["EMA50"] = df_h1["Close"].ewm(span=50, adjust=False).mean()
-        h1_c = float(df_h1["Close"].iloc[-1])
-        h1_e200 = float(df_h1["EMA200"].iloc[-1])
-        h1_e50 = float(df_h1["EMA50"].iloc[-1])
+        # Macro Trend Context
+        df_macro["EMA200"] = df_macro["Close"].ewm(span=min(200, len(df_macro)-5), adjust=False).mean()
+        macro_c = float(df_macro["Close"].iloc[-1])
+        macro_e200 = float(df_macro["EMA200"].iloc[-1])
 
-        df_m15["EMA200"] = df_m15["Close"].ewm(span=200, adjust=False).mean()
-        df_m15["EMA50"] = df_m15["Close"].ewm(span=50, adjust=False).mean()
-        df_m15["EMA20"] = df_m15["Close"].ewm(span=20, adjust=False).mean()
-        df_m15["RSI"] = self._calc_rsi(df_m15["Close"])
-        df_m15["ADX"] = self._calc_adx(df_m15)
-        df_m15["ATR"] = self._calc_atr(df_m15)
+        # Base Timeframe Structure
+        df_base["EMA200"] = df_base["Close"].ewm(span=min(200, len(df_base)-5), adjust=False).mean()
+        df_base["EMA50"] = df_base["Close"].ewm(span=50, adjust=False).mean()
+        df_base["EMA20"] = df_base["Close"].ewm(span=20, adjust=False).mean()
+        df_base["RSI"] = self._calc_rsi(df_base["Close"])
+        df_base["ADX"] = self._calc_adx(df_base)
+        df_base["ATR"] = self._calc_atr(df_base)
 
-        curr = df_m15.iloc[-1]
-        prev = df_m15.iloc[-2]
+        curr = df_base.iloc[-1]
+        prev = df_base.iloc[-2]
         price, open_p = float(curr["Close"]), float(curr["Open"])
         high_p, low_p = float(curr["High"]), float(curr["Low"])
         atr = float(curr["ATR"])
-        adx_now, adx_prev = float(curr["ADX"]), float(prev["ADX"])
+        adx_now = float(curr["ADX"])
         rsi = float(curr["RSI"])
         e200, e50, e20 = float(curr["EMA200"]), float(curr["EMA50"]), float(curr["EMA20"])
 
-        if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (2.8 * atr):
+        if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (3.0 * atr):
             return None
 
         pair_rules = memory_guard.get_pair_rules(symbol)
         pullback_limit = pair_rules["pullback_atr"]
 
         direction = None
-        if h1_c > h1_e200 and h1_e50 > h1_e200 and price > e200 and e20 > e50:
-            if 50 <= rsi <= 65 and price > open_p and abs(low_p - e20) <= (pullback_limit * atr):
+        if macro_c > macro_e200 and price > e200 and e20 > e50:
+            if 48 <= rsi <= 68 and price > open_p and abs(low_p - e20) <= (pullback_limit * atr):
                 direction = "BUY"
-        elif h1_c < h1_e200 and h1_e50 < h1_e200 and price < e200 and e20 < e50:
-            if 35 <= rsi <= 50 and price < open_p and abs(high_p - e20) <= (pullback_limit * atr):
+        elif macro_c < macro_e200 and price < e200 and e20 < e50:
+            if 32 <= rsi <= 52 and price < open_p and abs(high_p - e20) <= (pullback_limit * atr):
                 direction = "SELL"
 
         if not direction:
             return None
 
+        # Memory & Recovery Gate Check
         allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
-            log.info(f"Skipped {symbol} {direction}: {reason}")
             return None
 
         in_recovery = rec_meta.get("recovery_active", False)
         learned_min_adx = rec_meta.get("learned_min_adx", pair_rules["min_adx"])
-        final_adx_threshold = learned_min_adx + 3.0 if in_recovery else learned_min_adx
+        final_adx_threshold = (learned_min_adx + 2.0) if in_recovery else learned_min_adx
 
-        if adx_now < final_adx_threshold or adx_now < adx_prev:
+        if adx_now < final_adx_threshold:
             return None
 
-        sl_mult = 1.2
-        tp_mult = 2.0 if in_recovery else 1.6
-
-        sl_dist = sl_mult * atr
-        tp_dist = tp_mult * atr
+        sl_dist = cfg["sl_mult"] * atr
+        tp_dist = (cfg["tp_mult"] + 0.4 if in_recovery else cfg["tp_mult"]) * atr
         pip_sz = meta["pip_size"]
         dig = meta["digits"]
 
         sl_pips = round(sl_dist / pip_sz, 1)
         tp_pips = round(tp_dist / pip_sz, 1)
-        if tp_pips < self.min_tp_pips:
+        if tp_pips < cfg["min_pips"]:
             return None
 
         sl_val = round(price - sl_dist if direction == "BUY" else price + sl_dist, dig)
         tp_val = round(price + tp_dist if direction == "BUY" else price - tp_dist, dig)
-        mode_label = f"ADX>={final_adx_threshold:.1f} (RECOVERY)" if in_recovery else f"ADX>={final_adx_threshold:.1f} (LEARNED)"
+        mode_label = f"{tf.upper()} {cfg['desc']} (RECOVERY)" if in_recovery else f"{tf.upper()} {cfg['desc']}"
 
         return {
             "symbol": symbol,
+            "timeframe": tf,
             "action": direction,
             "entry_low": round(min(price, open_p), dig),
             "entry_high": round(max(price, open_p), dig),
@@ -182,8 +210,8 @@ class LightweightScanner:
             "sl": sl_val,
             "tp": tp_val,
             "tp1": tp_val,
-            "tp2": round(price + (2.5 * atr) if direction == "BUY" else price - (2.5 * atr), dig),
-            "tp3": round(price + (3.2 * atr) if direction == "BUY" else price - (3.2 * atr), dig),
+            "tp2": round(price + (2.2 * atr) if direction == "BUY" else price - (2.2 * atr), dig),
+            "tp3": round(price + (3.0 * atr) if direction == "BUY" else price - (3.0 * atr), dig),
             "sl_pips": sl_pips,
             "tp_pips": tp_pips,
             "rsi": round(rsi, 1),
@@ -196,16 +224,19 @@ class LightweightScanner:
         discovered = []
         now_ts = datetime.now(timezone.utc).timestamp()
 
+        # Scan all 5 pairs across all 3 timeframes (5m, 15m, 1h)
         for sym, meta in self.market_map.items():
-            if not bypass_cooldown and (now_ts - self.cooldowns.get(sym, 0)) < self.cooldown_sec:
-                continue
-            sig = self.evaluate_pair(sym, meta)
-            if sig:
-                if enforce_window and not self.is_within_trading_window():
-                    log.info(f"Analyzed {sym} {sig['action']} setup outside trading hours (Standby).")
+            for tf in ["5m", "15m", "1h"]:
+                cooldown_key = f"{sym}_{tf}"
+                if not bypass_cooldown and (now_ts - self.cooldowns.get(cooldown_key, 0)) < self.cooldown_sec:
                     continue
-                self.cooldowns[sym] = now_ts
-                discovered.append(sig)
+                
+                sig = self.evaluate_timeframe(sym, meta, tf)
+                if sig:
+                    if enforce_window and not self.is_within_trading_window():
+                        continue
+                    self.cooldowns[cooldown_key] = now_ts
+                    discovered.append(sig)
 
         return pd.DataFrame(discovered) if discovered else pd.DataFrame()
 
