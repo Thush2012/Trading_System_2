@@ -41,15 +41,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💎 *24/7 Cloud Analyzer & Auto-Recovery Engine*\n\n"
         f"• *Monitored Pairs:* {FOREX_PAIRS_DISPLAY}\n"
         "• *Cloud Analysis:* 24/7 Continuous (News & Spike Filtered)\n"
-        "• *Execution Window:* Mon–Fri, 1:30 PM – 9:30 PM SLT\n"
-        "• *Daily Profit Lock:* +$3.00 to +$5.00 (Auto-stops at +$4.00)\n"
+        "• *Execution Window:* Mon–Fri, 8:00 AM – 9:30 PM SLT *(Excluding 6:30–8:30 PM Power Cut)*\n"
+        "• *Daily Profit Lock:* +$3.00 to +$5.00 (Locked at +$4.00)\n"
         "• *Loss Memory:* 3h Directional Lockout + 2.0R Recovery"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     in_window = global_scanner.is_within_trading_window()
-    state_str = "🟢 EXECUTION ACTIVE (1:30 PM - 9:30 PM SLT)" if in_window else "🔍 24/7 ANALYSIS ONLY (Execution Standby)"
+    state_str = "🟢 EXECUTION ACTIVE (8:00 AM - 9:30 PM SLT)" if in_window else "⏸️ STANDBY (Outside Hours / Power Cut Block)"
     rec_active = memory_guard.state.get("in_recovery", False)
     deficit = memory_guard.state.get("deficit_usd", 0.0)
     rec_str = f"🔥 Active (Deficit: ${deficit:.2f} | Target: 2.0R)" if rec_active else "✅ Normal (Target: 1.6R)"
@@ -60,7 +60,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *Recovery Status:* {rec_str}\n"
         f"• *Pairs:* {FOREX_PAIRS_DISPLAY}\n"
         "• *Daily Profit Goal:* $3.00 – $5.00 (Locked at +$4.00)\n"
-        "• *Weekend Guard:* MT5 Locked on Sat & Sun"
+        "• *Operating Window:* 8:00 AM – 9:30 PM SLT (Excluding 6:30–8:30 PM Power Cut)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
@@ -85,7 +85,8 @@ async def cmd_trading_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🕒 *OPERATING SCHEDULE (SRI LANKA TIME)*\n\n"
         "• *24/7 Cloud Analysis:* Runs continuously to track EMAs, ADX, and news volatility.\n"
-        "• *Active Trade Window:* Monday – Friday, *1:30 PM – 9:30 PM SLT*.\n"
+        "• *Active Trade Window:* Monday – Friday, *8:00 AM – 9:30 PM SLT*.\n"
+        "• *Power Cut Blackout:* Completely locked out between *6:30 PM – 8:30 PM SLT* (No Wi-Fi/Power).\n"
         "• *Weekend Lock:* Completely disabled on Saturday & Sunday so MT5 never opens."
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
