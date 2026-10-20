@@ -2730,3 +2730,28 @@ AttributeError: 'RiskManager' object has no attribute 'evaluate_forex_stake'
 [2026-10-14 07:37:52] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-14 07:38:27] [ERROR] (MasterEngine) Telegram error encountered: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
 [2026-10-17 07:29:36] [INFO] (MasterEngine) Supabase signal queue connected.
+[2026-10-20 15:10:35] [INFO] (AdaptiveBrain) Synced permanent self-learning rules from Supabase.
+[2026-10-20 15:10:36] [INFO] (AdaptiveBrain) Synced permanent self-learning rules from Supabase.
+[2026-10-20 15:11:06] [INFO] (MultiTFScanner) MT5 Live Feed active for Multi-TF scanner.
+[2026-10-20 15:11:06] [INFO] (MasterEngine) Initializing Manual Trading Engine...
+[2026-10-20 15:11:06] [INFO] (MasterEngine) Background scan schedule registered.
+[2026-10-20 15:11:11] [INFO] (MasterEngine) Health check server active on port 8080
+[2026-10-20 15:11:17] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:11:23] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:11:46] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:11:53] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:01] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:08] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:13] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:24] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:36] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:12:54] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:13:16] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:13:46] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:14:21] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:14:56] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:15:31] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:15:44] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:15:49] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:15:56] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-10-20 15:16:11] [ERROR] (MasterEngine) Telegram error: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
