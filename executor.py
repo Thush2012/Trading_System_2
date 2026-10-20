@@ -26,7 +26,7 @@ MAX_OPEN_POSITIONS = 2
 DAILY_PROFIT_TARGET_USD = 4.00
 DAILY_MAX_LOSS_CAP_USD = -3.00
 
-# Sri Lanka Time Window Configuration (Morning to Night, minus Power Cut)
+# Sri Lanka Time Window Configuration (Morning Session to Night, minus Power Cut)
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
 
 def is_execution_window_active() -> tuple[bool, str]:
