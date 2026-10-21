@@ -13,23 +13,20 @@ try:
 except ImportError:
     HAS_MT5 = False
 
-log = setup_system_logger("HighFreqScanner")
+log = setup_system_logger("MultiTFScanner")
 memory_guard = LossMemoryEngine()
 
-FOREX_MARKETS = {
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.0},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.2},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 3.0},
-}
-# Add Crypto to your existing FOREX_MARKETS or create a combined dictionary
-CRYPTO_MARKETS = {
-    "BTCUSDT": {"ticker": "BTC-USD", "pip_size": 1.0, "digits": 2, "max_spread": 15.0, "asset_type": "CRYPTO"},
-    "ETHUSDT": {"ticker": "ETH-USD", "pip_size": 0.1, "digits": 2, "max_spread": 8.0, "asset_type": "CRYPTO"},
+# Combined Forex and Crypto Markets with explicit asset_type tags
+MARKET_CONFIG = {
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.0, "asset_type": "FOREX"},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.2, "asset_type": "FOREX"},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0, "asset_type": "FOREX"},
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0, "asset_type": "FOREX"},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 3.0, "asset_type": "FOREX"},
+    "BTCUSDT": {"ticker": "BTC-USD", "pip_size": 1.0,   "digits": 2, "max_spread": 20.0, "asset_type": "CRYPTO"},
+    "ETHUSDT": {"ticker": "ETH-USD", "pip_size": 0.1,    "digits": 2, "max_spread": 10.0, "asset_type": "CRYPTO"},
 }
 
-# Expanded Timeframe Horizons for More Frequent Opportunities
 TIMEFRAME_CONFIG = {
     "5m": {
         "macro_tf": "15m",
@@ -59,9 +56,9 @@ TIMEFRAME_CONFIG = {
 
 class LightweightScanner:
     def __init__(self):
-        self.market_map = FOREX_MARKETS
+        self.market_map = MARKET_CONFIG
         self.cooldowns = {}
-        self.cooldown_sec = 600  # Reduced cooldown (10 mins) to catch recurring market waves
+        self.cooldown_sec = 600
         self.slt_tz = pytz.timezone("Asia/Colombo")
         self.mt5_initialized = False
         self._connect_mt5()
@@ -71,7 +68,7 @@ class LightweightScanner:
             return
         if HAS_MT5 and mt5.initialize():
             self.mt5_initialized = True
-            log.info("MT5 Live Feed active for High-Frequency scanner.")
+            log.info("MT5 Live Feed active for Multi-TF scanner.")
 
     def is_within_trading_window(self) -> bool:
         """Active Mon-Fri from 8:00 AM to 9:30 PM SLT, excluding 6:30 - 8:30 PM power cut."""
@@ -109,8 +106,12 @@ class LightweightScanner:
         dx = 100.0 * (p_di - m_di).abs() / (p_di + m_di + 1e-9)
         return dx.rolling(window=period).mean()
 
-    def _get_candles(self, symbol: str, ticker: str, tf: str) -> pd.DataFrame:
-        if self.mt5_initialized and datetime.now(self.slt_tz).weekday() < 5:
+    def _get_candles(self, symbol: str, meta: dict, tf: str) -> pd.DataFrame:
+        asset_type = meta["asset_type"]
+        ticker = meta["ticker"]
+
+        # If it's Forex, prefer live MT5 feed when available
+        if asset_type == "FOREX" and self.mt5_initialized and datetime.now(self.slt_tz).weekday() < 5:
             tf_map = {
                 "5m": mt5.TIMEFRAME_M5,
                 "15m": mt5.TIMEFRAME_M15,
@@ -124,6 +125,8 @@ class LightweightScanner:
                 df = pd.DataFrame(rates)
                 df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
                 return df
+
+        # Fallback to yfinance for Crypto (BTC-USD, ETH-USD) or if MT5 is offline
         try:
             p_map = {"5m": "2d", "15m": "5d", "1h": "1mo", "1d": "1y"}
             df = yf.download(ticker, period=p_map.get(tf, "1mo"), interval=tf, progress=False)
@@ -138,8 +141,8 @@ class LightweightScanner:
         cfg = TIMEFRAME_CONFIG[tf]
         macro_tf = cfg["macro_tf"]
 
-        df_base = self._get_candles(symbol, meta["ticker"], tf)
-        df_macro = self._get_candles(symbol, meta["ticker"], macro_tf)
+        df_base = self._get_candles(symbol, meta, tf)
+        df_macro = self._get_candles(symbol, meta, macro_tf)
         if len(df_base) < 80 or len(df_macro) < 60:
             return None
 
@@ -168,7 +171,7 @@ class LightweightScanner:
             return None
 
         pair_rules = memory_guard.get_pair_rules(symbol)
-        pullback_limit = max(pair_rules["pullback_atr"], 0.65)  # Slightly relaxed for higher frequency
+        pullback_limit = max(pair_rules["pullback_atr"], 0.65)
 
         direction = None
         if macro_c > macro_e200 and price > e100 and e20 > e50:
@@ -181,13 +184,12 @@ class LightweightScanner:
         if not direction:
             return None
 
-        # Check Loss Memory Gate
         allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
             return None
 
         in_recovery = rec_meta.get("recovery_active", False)
-        base_adx_req = max(cfg["min_adx"], pair_rules["min_adx"] - 2.0) # Lowered base requirement for more frequency
+        base_adx_req = max(cfg["min_adx"], pair_rules["min_adx"] - 2.0)
         final_adx_threshold = (base_adx_req + 2.0) if in_recovery else base_adx_req
 
         if adx_now < final_adx_threshold:
@@ -210,6 +212,7 @@ class LightweightScanner:
         return {
             "symbol": symbol,
             "timeframe": tf,
+            "asset_type": meta["asset_type"],  # Crucial tag for executor routing
             "action": direction,
             "entry_low": round(min(price, open_p), dig),
             "entry_high": round(max(price, open_p), dig),

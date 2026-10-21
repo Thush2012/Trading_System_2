@@ -27,7 +27,6 @@ tracker = TradeTracker()
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
 
-# Initialize Supabase Client for Auto-Execution Queue
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client | None = None
@@ -50,7 +49,7 @@ def get_open_trade_count(tr: TradeTracker) -> int:
     return 0
 
 def push_to_supabase(sig: dict):
-    """Pushes validated trade signals to Supabase for automated local execution."""
+    """Pushes validated trade signals to Supabase for automated local execution (Forex or Crypto)."""
     if not supabase:
         return
     try:
@@ -62,11 +61,11 @@ def push_to_supabase(sig: dict):
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
             "sl_pips": float(sig.get("sl_pips", 0.0)),
             "tp_pips": float(sig.get("tp_pips", 0.0)),
-            "asset_type": sig.get("asset_type", "FOREX"),  # Supports FOREX or CRYPTO
+            "asset_type": sig.get("asset_type", "FOREX"),
             "status": "PENDING"
         }
         supabase.table("trade_signals").insert(payload).execute()
-        log.info(f"Signal pushed to Supabase queue for auto-execution: {sig['symbol']}")
+        log.info(f"Signal pushed to Supabase queue for auto-execution: {sig['symbol']} ({sig.get('asset_type', 'FOREX')})")
     except Exception as exc:
         log.error(f"Supabase queue insert error: {exc}")
 
@@ -90,7 +89,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram error: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """24/7 Background Loop: Evaluates active trades, updates loss memory, and alerts Telegram/Supabase."""
     try:
         trade_updates = tracker.evaluate_active_trades()
         for event in trade_updates:
@@ -121,7 +119,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 friend_msg = format_friend_signal(sig_dict)
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=friend_msg, parse_mode="Markdown")
 
-                # Push to Supabase queue so local executor can place the trade automatically
+                # Push to Supabase queue so local executor places it automatically on MT5 or Binance
                 push_to_supabase(sig_dict)
 
                 ticker = global_scanner.market_map.get(sig_dict["symbol"], {}).get("ticker", "")
@@ -138,7 +136,7 @@ async def post_init_hook(application):
     startup_msg = (
         "💎 *Dual-Asset Engine Online*\n\n"
         f"• *Boot Time:* `{now_slt}`\n"
-        "• *Execution Mode:* Dual Telegram Format + Supabase Queue\n"
+        "• *Execution Mode:* Dual Telegram Format + Supabase Queue (Forex + Crypto)\n"
         "• *Loss Memory:* Active (Tracks outcomes & evolves pair rules)\n"
         "• *Target Model:* Asymmetric 1.6R / 2.0R Recovery Payoff"
     )
