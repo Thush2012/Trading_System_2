@@ -4,6 +4,7 @@ from datetime import datetime
 import pytz
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from supabase import create_client, Client
 from core.config import Config
 from core.logger import setup_system_logger
 from core.tracker import TradeTracker
@@ -26,6 +27,18 @@ tracker = TradeTracker()
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
 
+# Initialize Supabase Client for Auto-Execution Queue
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client | None = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        log.info("Supabase signal queue connected.")
+    except Exception as err:
+        log.error(f"Supabase initialization error: {err}")
+
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -36,11 +49,32 @@ def get_open_trade_count(tr: TradeTracker) -> int:
             return len(val)
     return 0
 
+def push_to_supabase(sig: dict):
+    """Pushes validated trade signals to Supabase for automated local execution."""
+    if not supabase:
+        return
+    try:
+        payload = {
+            "symbol": sig["symbol"],
+            "action": sig["action"],
+            "entry_price": float(sig["current_price"]),
+            "sl": float(sig["sl"]),
+            "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
+            "sl_pips": float(sig.get("sl_pips", 0.0)),
+            "tp_pips": float(sig.get("tp_pips", 0.0)),
+            "asset_type": sig.get("asset_type", "FOREX"),  # Supports FOREX or CRYPTO
+            "status": "PENDING"
+        }
+        supabase.table("trade_signals").insert(payload).execute()
+        log.info(f"Signal pushed to Supabase queue for auto-execution: {sig['symbol']}")
+    except Exception as exc:
+        log.error(f"Supabase queue insert error: {exc}")
+
 async def handle_ping(request):
     now_slt = datetime.now(SLT_TZ)
     is_weekend = now_slt.weekday() >= 5
-    window_status = "Weekend Standby" if is_weekend else "24/7 Manual Alert Mode Active"
-    return web.Response(text=f"Manual Trading Engine Running 24/7 | Mode: {window_status}")
+    window_status = "Weekend Standby" if is_weekend else "24/7 Dual-Asset Engine Active"
+    return web.Response(text=f"Trading Engine Running 24/7 | Mode: {window_status}")
 
 async def start_web_server():
     app = web.Application()
@@ -56,7 +90,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram error: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """24/7 Background Loop: Evaluates active trades, updates loss memory, and alerts Telegram."""
+    """24/7 Background Loop: Evaluates active trades, updates loss memory, and alerts Telegram/Supabase."""
     try:
         trade_updates = tracker.evaluate_active_trades()
         for event in trade_updates:
@@ -79,18 +113,21 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
 
                 sig_dict = row.to_dict()
 
-                # Send Message 1: Detailed Style
+                # Send Message 1: Detailed Style to Telegram
                 detailed_msg = format_detailed_signal(sig_dict)
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=detailed_msg, parse_mode="Markdown")
 
-                # Send Message 2: Friend Share Style
+                # Send Message 2: Friend Share Style to Telegram
                 friend_msg = format_friend_signal(sig_dict)
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=friend_msg, parse_mode="Markdown")
+
+                # Push to Supabase queue so local executor can place the trade automatically
+                push_to_supabase(sig_dict)
 
                 ticker = global_scanner.market_map.get(sig_dict["symbol"], {}).get("ticker", "")
                 if ticker:
                     tracker.register_trade(sig_dict, ticker)
-                log.info(f"Manual dual signal dispatched for {sig_dict['symbol']}.")
+                log.info(f"Dual signal dispatched and queued for {sig_dict['symbol']}.")
 
     except Exception as err:
         log.error(f"Background loop error: {err}")
@@ -99,9 +136,9 @@ async def post_init_hook(application):
     await start_web_server()
     now_slt = datetime.now(SLT_TZ).strftime("%Y-%m-%d %I:%M %p SLT")
     startup_msg = (
-        "💎 *Manual Trading & Memory Engine Online*\n\n"
+        "💎 *Dual-Asset Engine Online*\n\n"
         f"• *Boot Time:* `{now_slt}`\n"
-        "• *Execution Mode:* 100% Manual Input (Dual Telegram Format)\n"
+        "• *Execution Mode:* Dual Telegram Format + Supabase Queue\n"
         "• *Loss Memory:* Active (Tracks outcomes & evolves pair rules)\n"
         "• *Target Model:* Asymmetric 1.6R / 2.0R Recovery Payoff"
     )
@@ -115,7 +152,7 @@ async def post_init_hook(application):
         log.error(f"Startup notification failed: {exc}")
 
 def main():
-    log.info("Initializing Manual Trading Engine...")
+    log.info("Initializing Dual-Asset Trading Engine...")
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)

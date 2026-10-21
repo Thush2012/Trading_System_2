@@ -13,39 +13,47 @@ try:
 except ImportError:
     HAS_MT5 = False
 
-log = setup_system_logger("MultiTFScanner")
+log = setup_system_logger("HighFreqScanner")
 memory_guard = LossMemoryEngine()
 
 FOREX_MARKETS = {
-    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 1.8},
-    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
-    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 1.8},
-    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 1.8},
-    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.6},
+    "USDJPY": {"ticker": "USDJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 2.0},
+    "EURGBP": {"ticker": "EURGBP=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.2},
+    "AUDUSD": {"ticker": "AUDUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
+    "EURUSD": {"ticker": "EURUSD=X", "pip_size": 0.0001, "digits": 5, "max_spread": 2.0},
+    "GBPJPY": {"ticker": "GBPJPY=X", "pip_size": 0.01,   "digits": 3, "max_spread": 3.0},
+}
+# Add Crypto to your existing FOREX_MARKETS or create a combined dictionary
+CRYPTO_MARKETS = {
+    "BTCUSDT": {"ticker": "BTC-USD", "pip_size": 1.0, "digits": 2, "max_spread": 15.0, "asset_type": "CRYPTO"},
+    "ETHUSDT": {"ticker": "ETH-USD", "pip_size": 0.1, "digits": 2, "max_spread": 8.0, "asset_type": "CRYPTO"},
 }
 
-# Multi-Timeframe Definitions & Scaling Rules
+# Expanded Timeframe Horizons for More Frequent Opportunities
 TIMEFRAME_CONFIG = {
     "5m": {
         "macro_tf": "15m",
-        "min_pips": 8.0,
-        "sl_mult": 1.3,
-        "tp_mult": 1.5,
-        "desc": "SCALP"
+        "min_adx": 21.0,
+        "min_pips": 7.0,
+        "sl_mult": 1.2,
+        "tp_mult": 1.3,
+        "desc": "FAST SCALP"
     },
     "15m": {
         "macro_tf": "1h",
-        "min_pips": 15.0,
-        "sl_mult": 1.2,
+        "min_adx": 23.0,
+        "min_pips": 12.0,
+        "sl_mult": 1.3,
         "tp_mult": 1.6,
         "desc": "INTRADAY"
     },
     "1h": {
         "macro_tf": "1d",
-        "min_pips": 25.0,
+        "min_adx": 24.0,
+        "min_pips": 20.0,
         "sl_mult": 1.5,
-        "tp_mult": 2.2,
-        "desc": "MACRO"
+        "tp_mult": 2.0,
+        "desc": "SWING"
     }
 }
 
@@ -53,7 +61,7 @@ class LightweightScanner:
     def __init__(self):
         self.market_map = FOREX_MARKETS
         self.cooldowns = {}
-        self.cooldown_sec = 900  # 15-min cooldown per symbol/timeframe combo
+        self.cooldown_sec = 600  # Reduced cooldown (10 mins) to catch recurring market waves
         self.slt_tz = pytz.timezone("Asia/Colombo")
         self.mt5_initialized = False
         self._connect_mt5()
@@ -63,7 +71,7 @@ class LightweightScanner:
             return
         if HAS_MT5 and mt5.initialize():
             self.mt5_initialized = True
-            log.info("MT5 Live Feed active for Multi-TF scanner.")
+            log.info("MT5 Live Feed active for High-Frequency scanner.")
 
     def is_within_trading_window(self) -> bool:
         """Active Mon-Fri from 8:00 AM to 9:30 PM SLT, excluding 6:30 - 8:30 PM power cut."""
@@ -111,13 +119,13 @@ class LightweightScanner:
             }
             mt5_tf = tf_map.get(tf, mt5.TIMEFRAME_M15)
             sfx = os.getenv("MT5_SYMBOL_SUFFIX", "")
-            rates = mt5.copy_rates_from_pos(f"{symbol}{sfx}", mt5_tf, 0, 240)
-            if rates is not None and len(rates) >= 150:
+            rates = mt5.copy_rates_from_pos(f"{symbol}{sfx}", mt5_tf, 0, 200)
+            if rates is not None and len(rates) >= 100:
                 df = pd.DataFrame(rates)
                 df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
                 return df
         try:
-            p_map = {"5m": "3d", "15m": "5d", "1h": "1mo", "1d": "1y"}
+            p_map = {"5m": "2d", "15m": "5d", "1h": "1mo", "1d": "1y"}
             df = yf.download(ticker, period=p_map.get(tf, "1mo"), interval=tf, progress=False)
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -132,7 +140,7 @@ class LightweightScanner:
 
         df_base = self._get_candles(symbol, meta["ticker"], tf)
         df_macro = self._get_candles(symbol, meta["ticker"], macro_tf)
-        if len(df_base) < 140 or len(df_macro) < 100:
+        if len(df_base) < 80 or len(df_macro) < 60:
             return None
 
         # Macro Trend Context
@@ -141,7 +149,7 @@ class LightweightScanner:
         macro_e200 = float(df_macro["EMA200"].iloc[-1])
 
         # Base Timeframe Structure
-        df_base["EMA200"] = df_base["Close"].ewm(span=min(200, len(df_base)-5), adjust=False).mean()
+        df_base["EMA100"] = df_base["Close"].ewm(span=100, adjust=False).mean()
         df_base["EMA50"] = df_base["Close"].ewm(span=50, adjust=False).mean()
         df_base["EMA20"] = df_base["Close"].ewm(span=20, adjust=False).mean()
         df_base["RSI"] = self._calc_rsi(df_base["Close"])
@@ -149,45 +157,44 @@ class LightweightScanner:
         df_base["ATR"] = self._calc_atr(df_base)
 
         curr = df_base.iloc[-1]
-        prev = df_base.iloc[-2]
         price, open_p = float(curr["Close"]), float(curr["Open"])
         high_p, low_p = float(curr["High"]), float(curr["Low"])
         atr = float(curr["ATR"])
         adx_now = float(curr["ADX"])
         rsi = float(curr["RSI"])
-        e200, e50, e20 = float(curr["EMA200"]), float(curr["EMA50"]), float(curr["EMA20"])
+        e100, e50, e20 = float(curr["EMA100"]), float(curr["EMA50"]), float(curr["EMA20"])
 
-        if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (3.0 * atr):
+        if np.isnan(atr) or atr <= 0 or (high_p - low_p) > (3.5 * atr):
             return None
 
         pair_rules = memory_guard.get_pair_rules(symbol)
-        pullback_limit = pair_rules["pullback_atr"]
+        pullback_limit = max(pair_rules["pullback_atr"], 0.65)  # Slightly relaxed for higher frequency
 
         direction = None
-        if macro_c > macro_e200 and price > e200 and e20 > e50:
-            if 48 <= rsi <= 68 and price > open_p and abs(low_p - e20) <= (pullback_limit * atr):
+        if macro_c > macro_e200 and price > e100 and e20 > e50:
+            if 45 <= rsi <= 70 and price > open_p and abs(low_p - e20) <= (pullback_limit * atr):
                 direction = "BUY"
-        elif macro_c < macro_e200 and price < e200 and e20 < e50:
-            if 32 <= rsi <= 52 and price < open_p and abs(high_p - e20) <= (pullback_limit * atr):
+        elif macro_c < macro_e200 and price < e100 and e20 < e50:
+            if 30 <= rsi <= 55 and price < open_p and abs(high_p - e20) <= (pullback_limit * atr):
                 direction = "SELL"
 
         if not direction:
             return None
 
-        # Memory & Recovery Gate Check
+        # Check Loss Memory Gate
         allowed, reason, rec_meta = memory_guard.check_permission(symbol, direction, adx_now)
         if not allowed:
             return None
 
         in_recovery = rec_meta.get("recovery_active", False)
-        learned_min_adx = rec_meta.get("learned_min_adx", pair_rules["min_adx"])
-        final_adx_threshold = (learned_min_adx + 2.0) if in_recovery else learned_min_adx
+        base_adx_req = max(cfg["min_adx"], pair_rules["min_adx"] - 2.0) # Lowered base requirement for more frequency
+        final_adx_threshold = (base_adx_req + 2.0) if in_recovery else base_adx_req
 
         if adx_now < final_adx_threshold:
             return None
 
         sl_dist = cfg["sl_mult"] * atr
-        tp_dist = (cfg["tp_mult"] + 0.4 if in_recovery else cfg["tp_mult"]) * atr
+        tp_dist = cfg["tp_mult"] * atr
         pip_sz = meta["pip_size"]
         dig = meta["digits"]
 
@@ -210,8 +217,8 @@ class LightweightScanner:
             "sl": sl_val,
             "tp": tp_val,
             "tp1": tp_val,
-            "tp2": round(price + (2.2 * atr) if direction == "BUY" else price - (2.2 * atr), dig),
-            "tp3": round(price + (3.0 * atr) if direction == "BUY" else price - (3.0 * atr), dig),
+            "tp2": round(price + (2.0 * atr) if direction == "BUY" else price - (2.0 * atr), dig),
+            "tp3": round(price + (2.8 * atr) if direction == "BUY" else price - (2.8 * atr), dig),
             "sl_pips": sl_pips,
             "tp_pips": tp_pips,
             "rsi": round(rsi, 1),
@@ -224,7 +231,6 @@ class LightweightScanner:
         discovered = []
         now_ts = datetime.now(timezone.utc).timestamp()
 
-        # Scan all 5 pairs across all 3 timeframes (5m, 15m, 1h)
         for sym, meta in self.market_map.items():
             for tf in ["5m", "15m", "1h"]:
                 cooldown_key = f"{sym}_{tf}"
