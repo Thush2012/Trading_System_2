@@ -9,6 +9,7 @@ from core.config import Config
 from core.logger import setup_system_logger
 from core.tracker import TradeTracker
 from core.pro_tracker import ProTraderTracker
+from core.optimizer import StrategyOptimizer
 from telegram_bot import (
     cmd_start,
     cmd_scan,
@@ -25,6 +26,7 @@ log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 tracker = TradeTracker()
 pro_tracker = ProTraderTracker()
+optimizer = StrategyOptimizer()
 
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
@@ -108,6 +110,12 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
 async def daily_pro_evolution_job(context: ContextTypes.DEFAULT_TYPE):
     pro_tracker.run_daily_evolution_analysis()
 
+async def weekend_optimization_job(context: ContextTypes.DEFAULT_TYPE):
+    """Runs automated strategy parameter optimization every weekend."""
+    for symbol in ["EURUSD", "USDJPY", "BTCUSDT"]:
+        optimizer.optimize_weekly_parameters(symbol)
+    log.info("Weekend automated strategy optimization complete across all assets.")
+
 async def post_init_hook(application):
     await start_web_server()
 
@@ -131,8 +139,9 @@ def main():
         app.job_queue.run_repeating(scheduled_scan_job, interval=900, first=20)
         app.job_queue.run_repeating(weekly_report_job, interval=600, first=30)
         app.job_queue.run_repeating(daily_pro_evolution_job, interval=86400, first=60)
+        app.job_queue.run_repeating(weekend_optimization_job, interval=604800, first=120)
 
-    log.info("Starting bot via stable background polling...")
+    log.info("Starting bot via stable background polling with optimizer active...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
