@@ -18,6 +18,8 @@ class TradeTracker:
             "entry_price": float(sig["current_price"]),
             "sl": float(sig["sl"]),
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
+            "tp2": float(sig.get("tp2", sig.get("tp", 0.0))),
+            "tp1_hit": False,
             "sl_pips": float(sig.get("sl_pips", 15.0)),
             "tp_pips": float(sig.get("tp_pips", 20.0)),
             "adx": float(sig.get("adx", 25.0)),
@@ -46,7 +48,8 @@ class TradeTracker:
 
             is_buy = "BUY" in tr["action"]
             sl_hit = (px <= tr["sl"]) if is_buy else (px >= tr["sl"])
-            tp_hit = (px >= tr["tp"]) if is_buy else (px <= tr["tp"])
+            tp1_hit = (px >= tr["tp"]) if is_buy else (px <= tr["tp"])
+            tp_final_hit = (px >= tr["tp2"]) if is_buy else (px <= tr["tp2"])
 
             if sl_hit:
                 est_loss = round(tr["sl_pips"] * 0.10, 2)
@@ -59,15 +62,25 @@ class TradeTracker:
                 events.append({"symbol": sym, "type": "SL", "msg": msg})
                 closed.append(sym)
 
-            elif tp_hit:
-                est_win = round(tr["tp_pips"] * 0.10, 2)
+            elif tp1_hit and not tr["tp1_hit"]:
+                tr["tp1_hit"] = True
+                tr["sl"] = tr["entry_price"]  # Move Stop Loss to Breakeven
+                msg = (
+                    f"🎯 *TARGET 1 HIT (PARTIAL CLOSE): {sym}*\n"
+                    f"Direction: *{tr['action']}* | Price: `{px}`\n"
+                    "🛡️ *Action:* Secured partial profits and moved Stop Loss to Breakeven."
+                )
+                events.append({"symbol": sym, "type": "TP1", "msg": msg})
+
+            elif tp_final_hit or (tr["tp1_hit"] and (px >= tr["tp2"] if is_buy else px <= tr["tp2"])):
+                est_win = round(tr["tp_pips"] * 0.15, 2)
                 memory_guard.register_take_profit(sym, est_win)
                 msg = (
-                    f"🎯 *TAKE PROFIT HIT: {sym}*\n"
+                    f"🎯 *FINAL TAKE PROFIT HIT: {sym}*\n"
                     f"Direction: *{tr['action']}* | Exit: `{px}`\n"
                     "✅ *Memory Engine:* Profit recorded, deficit reduced, rules reinforced."
                 )
-                events.append({"symbol": sym, "type": "TP", "msg": msg})
+                events.append({"symbol": sym, "type": "TP_FINAL", "msg": msg})
                 closed.append(sym)
 
         for s in closed:
