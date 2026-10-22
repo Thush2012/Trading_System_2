@@ -31,7 +31,6 @@ SLT_TZ = pytz.timezone("Asia/Colombo")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -60,6 +59,19 @@ def push_to_supabase(sig: dict):
         supabase.table("trade_signals").insert(payload).execute()
     except Exception as exc:
         log.error(f"Supabase queue error: {exc}")
+
+async def handle_ping(request):
+    return web.Response(text="Trading Engine Running 24/7")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info(f"Health check server active on port {port}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -94,15 +106,20 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report_msg, parse_mode="Markdown")
 
 async def daily_pro_evolution_job(context: ContextTypes.DEFAULT_TYPE):
-    """Runs day-to-day pro trader history analysis every 24 hours."""
     pro_tracker.run_daily_evolution_analysis()
-    log.info("Day-to-day project update completed successfully based on pro trader history.")
+
+async def post_init_hook(application):
+    await start_web_server()
 
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
-    port = int(os.getenv("PORT", 8080))
     
-    app = ApplicationBuilder().token(token).build()
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(post_init_hook)
+        .build()
+    )
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
@@ -115,18 +132,8 @@ def main():
         app.job_queue.run_repeating(weekly_report_job, interval=600, first=30)
         app.job_queue.run_repeating(daily_pro_evolution_job, interval=86400, first=60)
 
-    if RENDER_EXTERNAL_URL:
-        webhook_url = f"{RENDER_EXTERNAL_URL}/{token}"
-        log.info(f"Starting bot via Webhook on port {port} -> {webhook_url}")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=webhook_url,
-            drop_pending_updates=True
-        )
-    else:
-        log.info("Starting bot via Local Polling...")
-        app.run_polling(drop_pending_updates=True)
+    log.info("Starting bot via stable background polling...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
