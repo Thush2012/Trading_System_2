@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -8,6 +8,7 @@ from supabase import create_client, Client
 from core.config import Config
 from core.logger import setup_system_logger
 from core.tracker import TradeTracker
+from core.pro_tracker import ProTraderTracker
 from telegram_bot import (
     cmd_start,
     cmd_scan,
@@ -23,17 +24,22 @@ from telegram_bot import (
 log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 tracker = TradeTracker()
+pro_tracker = ProTraderTracker()
 
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # Automatically provided by Render
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        log.info("Supabase signal queue connected.")
+    except Exception as err:
+        log.error(f"Supabase initialization error: {err}")
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -87,6 +93,11 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
         )
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report_msg, parse_mode="Markdown")
 
+async def daily_pro_evolution_job(context: ContextTypes.DEFAULT_TYPE):
+    """Runs day-to-day pro trader history analysis every 24 hours."""
+    pro_tracker.run_daily_evolution_analysis()
+    log.info("Day-to-day project update completed successfully based on pro trader history.")
+
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
     port = int(os.getenv("PORT", 8080))
@@ -102,8 +113,8 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(scheduled_scan_job, interval=900, first=20)
         app.job_queue.run_repeating(weekly_report_job, interval=600, first=30)
+        app.job_queue.run_repeating(daily_pro_evolution_job, interval=86400, first=60)
 
-    # Use Webhooks on Render to permanently prevent polling conflicts
     if RENDER_EXTERNAL_URL:
         webhook_url = f"{RENDER_EXTERNAL_URL}/{token}"
         log.info(f"Starting bot via Webhook on port {port} -> {webhook_url}")

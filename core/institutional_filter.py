@@ -3,8 +3,10 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
 from core.logger import setup_system_logger
+from core.pro_tracker import ProTraderTracker
 
 log = setup_system_logger("InstitutionalFilter")
+pro_tracker = ProTraderTracker()
 
 class InstitutionalFilterEngine:
     def __init__(self):
@@ -17,8 +19,7 @@ class InstitutionalFilterEngine:
     def check_news_sentiment_guard(self) -> tuple[bool, str]:
         """Simulates an NLP News Guard. Blocks trading during high-impact structural windows."""
         current_utc_hour = datetime.now(timezone.utc).hour
-        # Example high-impact institutional release window simulation (e.g., US Fed / NFP hours)
-        if current_utc_hour in [12, 13]:  # 12:00 - 14:00 UTC London/NY crossover major news block
+        if current_utc_hour in [12, 13]:  # High-impact news window block
             return False, "NLP News Guard: High-impact macroeconomic news window active."
         return True, "News Sentiment Clear"
 
@@ -49,6 +50,15 @@ class InstitutionalFilterEngine:
             pass
         return True, "Passed Correlation"
 
+    def check_pro_alignment(self, symbol: str, direction: str) -> tuple[bool, str]:
+        """Ensures bot trades align with professional trader consensus."""
+        consensus = pro_tracker.get_pro_consensus(symbol)
+        if consensus == "BULLISH" and direction == "SELL":
+            return False, "Pro Filter: Conflict with professional trader long consensus."
+        if consensus == "BEARISH" and direction == "BUY":
+            return False, "Pro Filter: Conflict with professional trader short consensus."
+        return True, "Passed Pro Alignment"
+
     def evaluate_institutional_confluence(self, symbol: str, direction: str, df_base: pd.DataFrame) -> tuple[bool, str, dict]:
         news_ok, news_reason = self.check_news_sentiment_guard()
         if not news_ok:
@@ -62,8 +72,15 @@ class InstitutionalFilterEngine:
         if not corr_passed:
             return False, corr_reason, {}
 
+        pro_ok, pro_reason = self.check_pro_alignment(symbol, direction)
+        if not pro_ok:
+            return False, pro_reason, {}
+
         current_month = datetime.now(timezone.utc).month
         season_multiplier = self.seasonal_bias.get(symbol, {}).get(current_month, 1.0)
 
-        meta = {"volatility_regime": regime, "seasonal_multiplier": season_multiplier}
+        meta = {
+            "volatility_regime": regime,
+            "seasonal_multiplier": season_multiplier
+        }
         return True, "Passed Institutional Confluence", meta
