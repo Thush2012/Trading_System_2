@@ -3,7 +3,7 @@ pandas
 numpy
 yfinance
 python-dotenv
-python-telegram-bot
 APScheduler==3.10.4
 pytz
 supabase
+python-telegram-bot[webhooks]>=21.0
