@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 import pytz
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -29,6 +29,8 @@ SLT_TZ = pytz.timezone("Asia/Colombo")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # Automatically provided by Render
+
 supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -63,7 +65,6 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         if not report.empty:
             for _, row in report.iterrows():
                 sig = row.to_dict()
-                # Send Dual Telegram Formats with Interactive Buttons
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
                 push_to_supabase(sig)
@@ -75,7 +76,6 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         log.error(f"Scan loop error: {err}")
 
 async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
-    """Sends an automated weekly performance and journaling summary every Friday at 9:30 PM SLT."""
     now_slt = datetime.now(SLT_TZ)
     if now_slt.weekday() == 4 and now_slt.hour == 21 and now_slt.minute <= 15:
         report_msg = (
@@ -83,13 +83,16 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
             "• *Total Setups Scanned:* 42\n"
             "• *Win Rate Achieved:* 74.2%\n"
             "• *Net Profit (0.01 Lots):* +$19.50\n"
-            "• *Self-Learning Evolution:* Pair ADX rules tightened on GBPJPY; 2 hours blacklisted.\n"
             "• *Status:* Target met successfully for the week."
         )
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report_msg, parse_mode="Markdown")
 
 def main():
-    app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
+    token = Config.TELEGRAM_BOT_TOKEN
+    port = int(os.getenv("PORT", 8080))
+    
+    app = ApplicationBuilder().token(token).build()
+    
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -100,7 +103,19 @@ def main():
         app.job_queue.run_repeating(scheduled_scan_job, interval=900, first=20)
         app.job_queue.run_repeating(weekly_report_job, interval=600, first=30)
 
-    app.run_polling(drop_pending_updates=True)
+    # Use Webhooks on Render to permanently prevent polling conflicts
+    if RENDER_EXTERNAL_URL:
+        webhook_url = f"{RENDER_EXTERNAL_URL}/{token}"
+        log.info(f"Starting bot via Webhook on port {port} -> {webhook_url}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
+    else:
+        log.info("Starting bot via Local Polling...")
+        app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
