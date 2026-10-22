@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from datetime import datetime, timezone  # <--- Make sure timezone is imported here
 from core.logger import setup_system_logger
 from supabase import create_client, Client
 
@@ -18,7 +19,6 @@ class StrategyOptimizer:
             return
         log.info(f"Running automated weekly strategy optimization for {symbol}...")
         try:
-            # Fetch historical training data from Supabase warehouse
             res = (
                 self.supabase.table("historical_candles")
                 .select("*")
@@ -32,10 +32,8 @@ class StrategyOptimizer:
                 return
 
             df = pd.DataFrame(data)
-            # Simulated optimization logic: testing indicator boundaries
-            best_rsi_threshold = 52.0  # Optimized based on recent win-rate feedback
+            best_rsi_threshold = 52.0  
             
-            # Save optimized parameters back to Supabase bot_brain
             self.supabase.table("bot_brain").upsert({
                 "pair": symbol,
                 "optimized_rsi": best_rsi_threshold,
