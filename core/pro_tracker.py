@@ -87,16 +87,19 @@ class ProTraderTracker:
         """Runs day-to-day pro trader history analysis and weight evolution."""
         logger.info("Running day-to-day pro trader history analysis and weight evolution...")
         try:
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             log_data = {
                 "timestamp": timestamp,
                 "status": "completed",
                 "notes": "Pro trader history analysis executed successfully."
             }
-            # Optional: push metrics or logs back to Supabase performance table
-            # self.supabase.table("weekly_performance_logs").insert(log_data).execute()
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
+
+    def run_daily_evolution_analysis(self):
+        """Alias wrapper for daily evolution analysis called by main job scheduler."""
+        logger.info("Running daily pro trader evolution analysis...")
+        return self.run_daily_analysis()
 
 # Compatibility alias so any import expecting ProTrackerEngine works seamlessly
 ProTrackerEngine = ProTraderTracker
