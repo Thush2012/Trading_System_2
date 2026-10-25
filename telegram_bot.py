@@ -24,24 +24,30 @@ def format_detailed_signal(row: dict) -> str:
     setup_mode = row.get("setup", "STANDARD_1.6R")
     mode_badge = "🔥 *RECOVERY MODE (2.0R)*" if "RECOVERY" in setup_mode else "✅ *INSTITUTIONAL PRO*"
     asset_badge = "🪙 *CRYPTO (Binance)*" if row.get("asset_type") == "CRYPTO" else "💱 *FOREX (MT5)*"
+    
+    entry_low = row.get('entry_low', row.get('entry_price', 0.0))
+    entry_high = row.get('entry_high', row.get('entry_price', 0.0))
 
     return (
-        f"📊 *DETAILED SIGNAL: {row['symbol']}* ({asset_badge}\n"
+        f"📊 *DETAILED SIGNAL: {row['symbol']}* ({asset_badge})\n"
         f"Mode: {mode_badge}\n"
         f"Direction: *{row['action']}*\n\n"
-        f"📍 *Entry Zone:* `{row['entry_low']} - {row['entry_high']}`\n"
-        f"🛑 *Stop Loss:* `{row['sl']}` ({row['sl_pips']} pips)\n"
+        f"📍 *Entry Zone:* `{entry_low} - {entry_high}`\n"
+        f"🛑 *Stop Loss:* `{row['sl']}` ({row.get('sl_pips', '')} pips)\n"
         f"🎯 *Take Profit:* `{row['tp']}` ({row.get('tp_pips', '')} pips)\n\n"
-        f"📉 *Indicators:* RSI `{row['rsi']}` | ADX `{row['adx']}`\n"
-        f"🕒 *Timestamp:* `{row['timestamp']}`"
+        f"📉 *Indicators:* RSI `{row.get('rsi', 0)}` | ADX `{row.get('adx', 0)}`\n"
+        f"🕒 *Timestamp:* `{row.get('timestamp', 'N/A')}`"
     )
 
 def format_friend_signal(row: dict) -> str:
     """Clean version for forwarding to a friend."""
+    entry_low = row.get('entry_low', row.get('entry_price', 0.0))
+    entry_high = row.get('entry_high', row.get('entry_price', 0.0))
+    
     return (
         f"💱 *Pair:* `{row['symbol']}`\n"
         f"📈 *Direction:* *{row['action']}*\n"
-        f"🎯 *Entry:* `{row['entry_low']} - {row['entry_high']}`\n"
+        f"🎯 *Entry:* `{entry_low} - {entry_high}`\n"
         f"🎯 *TP:* `{row['tp']}`\n"
         f"🛑 *SL:* `{row['sl']}`"
     )
