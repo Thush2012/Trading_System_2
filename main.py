@@ -10,6 +10,7 @@ from core.logger import setup_system_logger
 from core.tracker import TradeTracker
 from core.pro_tracker import ProTraderTracker
 from core.optimizer import StrategyOptimizer
+from pro_tracker_engine import ProTrackerEngine
 from telegram_bot import (
     cmd_start,
     cmd_scan,
@@ -27,6 +28,7 @@ ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 tracker = TradeTracker()
 pro_tracker = ProTraderTracker()
 optimizer = StrategyOptimizer()
+pro_engine = ProTrackerEngine()
 
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
@@ -45,7 +47,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-def push_to_supabase(sig: dict):
+def push_to_supabase(sig: dict, institutional_score: int = 0):
     if not supabase:
         return
     try:
@@ -59,6 +61,7 @@ def push_to_supabase(sig: dict):
             "status": "PENDING"
         }
         supabase.table("trade_signals").insert(payload).execute()
+        log.info(f"Signal pushed to Supabase for {sig['symbol']} with Institutional Score: {institutional_score}")
     except Exception as exc:
         log.error(f"Supabase queue error: {exc}")
 
@@ -85,9 +88,22 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         if not report.empty:
             for _, row in report.iterrows():
                 sig = row.to_dict()
+                
+                # Evaluate market conditions against institutional pro-trader rules
+                indicators = {
+                    "z_score": sig.get("z_score", 2.5),
+                    "adx": sig.get("adx", 28.0),
+                    "macro_trend_aligned": True
+                }
+                score, feedback = pro_engine.evaluate_market_against_pro_rules(
+                    sig["symbol"], sig["current_price"], indicators
+                )
+                
+                # Append institutional feedback into telegram formatting if desired
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
-                push_to_supabase(sig)
+                
+                push_to_supabase(sig, institutional_score=score)
                 
                 ticker = global_scanner.market_map.get(sig["symbol"], {}).get("ticker", "")
                 if ticker:
@@ -109,6 +125,7 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def daily_pro_evolution_job(context: ContextTypes.DEFAULT_TYPE):
     pro_tracker.run_daily_evolution_analysis()
+    pro_engine.run_daily_analysis()
 
 async def weekend_optimization_job(context: ContextTypes.DEFAULT_TYPE):
     """Runs automated strategy parameter optimization every weekend."""
