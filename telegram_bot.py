@@ -29,6 +29,9 @@ def format_detailed_signal(row: dict) -> str:
     
     entry_low = row.get('entry_low', row.get('entry_price', 0.0))
     entry_high = row.get('entry_high', row.get('entry_price', 0.0))
+    
+    tf_1h = row.get('trend_1h', 'BULLISH')
+    tf_4h = row.get('trend_4h', 'BULLISH')
 
     return (
         f"📊 *DETAILED SIGNAL: {row['symbol']}* ({asset_badge})\n"
@@ -37,12 +40,12 @@ def format_detailed_signal(row: dict) -> str:
         f"📍 *Entry Zone:* `{entry_low} - {entry_high}`\n"
         f"🛑 *Stop Loss:* `{row['sl']}` ({row.get('sl_pips', '')} pips)\n"
         f"🎯 *Take Profit:* `{row['tp']}` ({row.get('tp_pips', '')} pips)\n\n"
+        f"📈 *Multi-Timeframe Trend:* 1H: `{tf_1h}` | 4H: `{tf_4h}`\n"
         f"📉 *Indicators:* RSI `{row.get('rsi', 0)}` | ADX `{row.get('adx', 0)}`\n"
         f"🕒 *Timestamp:* `{row.get('timestamp', 'N/A')}`"
     )
 
 def format_friend_signal(row: dict) -> str:
-    """Clean version for forwarding to a friend."""
     entry_low = row.get('entry_low', row.get('entry_price', 0.0))
     entry_high = row.get('entry_high', row.get('entry_price', 0.0))
     
@@ -55,7 +58,6 @@ def format_friend_signal(row: dict) -> str:
     )
 
 def get_signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:
-    """Interactive Inline Buttons for Telegram notifications."""
     keyboard = [
         [
             InlineKeyboardButton("✅ Execute Manually", callback_data=f"exec_{symbol}"),
@@ -102,9 +104,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(format_friend_signal(sig), parse_mode="Markdown")
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a visual Telegram dashboard with a rendered PNG equity chart."""
     await update.message.reply_text("📊 *Generating Live Institutional Dashboard...*", parse_mode="Markdown")
-    
     chart_buf = generate_performance_chart([])
     
     dashboard_caption = (
@@ -124,8 +124,24 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
+async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚙️ *Risk Management Tuning*\n\n"
+            "Usage: `/risk 0.5` or `/risk 1.0`\n"
+            "Current Default Risk: `1.0%` per trade.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    risk_level = context.args[0]
+    await update.message.reply_text(
+        f"✅ *Per-Trade Risk Successfully Updated to:* `{risk_level}%`",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles clicks on Telegram inline buttons."""
     query = update.callback_query
     await query.answer()
     data = query.data

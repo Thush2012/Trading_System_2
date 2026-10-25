@@ -118,6 +118,60 @@ def initialize_mt5() -> bool:
     log.info(f"MT5 Connected | Account: {mt5.account_info().login} | Balance: ${mt5.account_info().balance:.2f}")
     return True
 
+def manage_active_mt5_positions():
+    """Autonomously monitors open MT5 positions and moves SL to break-even when 50% toward TP1."""
+    try:
+        positions = mt5.positions_get()
+        if not positions:
+            return
+
+        for pos in positions:
+            symbol = pos.symbol
+            ticket = pos.ticket
+            entry = pos.price_open
+            sl = pos.sl
+            tp = pos.tp
+            is_buy = (pos.type == mt5.POSITION_TYPE_BUY)
+
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                continue
+            current_price = tick.bid if is_buy else tick.ask
+
+            if tp > 0:
+                total_distance = abs(tp - entry)
+                current_distance = abs(current_price - entry)
+
+                # If price reaches 50% towards Take Profit, shift SL to entry (Break-Even)
+                if current_distance >= (total_distance * 0.5):
+                    sym_info = mt5.symbol_info(symbol)
+                    digits = sym_info.digits if sym_info else 5
+
+                    if is_buy and sl < entry:
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "symbol": symbol,
+                            "position": ticket,
+                            "sl": round(entry, digits),
+                            "tp": round(tp, digits)
+                        }
+                        result = mt5.order_send(request)
+                        if result.retcode == mt5.TRADE_RETCODE_DONE:
+                            log.info(f"AUTO BREAK-EVEN: MT5 Position #{ticket} ({symbol}) SL moved to entry price {entry}")
+                    elif not is_buy and (sl > entry or sl == 0):
+                        request = {
+                            "action": mt5.TRADE_ACTION_SLTP,
+                            "symbol": symbol,
+                            "position": ticket,
+                            "sl": round(entry, digits),
+                            "tp": round(tp, digits)
+                        }
+                        result = mt5.order_send(request)
+                        if result.retcode == mt5.TRADE_RETCODE_DONE:
+                            log.info(f"AUTO BREAK-EVEN: MT5 Position #{ticket} ({symbol}) SL moved to entry price {entry}")
+    except Exception as e:
+        log.error(f"Error in manage_active_mt5_positions: {e}")
+
 def execute_crypto_order(exchange, sig: dict):
     """Executes crypto futures orders on Binance Demo via CCXT."""
     allowed, window_msg = is_execution_window_active()
@@ -203,7 +257,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     binance_exchange = initialize_binance()
 
-    log.info("Dual-Asset Local Executor active. Polling Supabase...")
+    log.info("Dual-Asset Local Executor active with Break-Even Manager. Polling Supabase...")
 
     while True:
         try:
@@ -211,6 +265,11 @@ def run_dual_executor():
                 time.sleep(60)
                 continue
 
+            # 1. Manage active position trailing/break-even checks
+            if mt5_active:
+                manage_active_mt5_positions()
+
+            # 2. Poll Supabase for pending trade signals
             res = (
                 supabase.table("trade_signals")
                 .select("*")
