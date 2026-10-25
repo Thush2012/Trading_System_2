@@ -6,7 +6,7 @@ from supabase import create_client
 logger = logging.getLogger("ProTrackerEngine")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (ProTrackerEngine) %(message)s")
 
-class ProTrackerEngine:
+class ProTraderTracker:
     def __init__(self):
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_KEY")
@@ -17,7 +17,7 @@ class ProTrackerEngine:
         self._ensure_pro_strategies_table()
 
     def _ensure_pro_strategies_table(self):
-        logger.info("Initializing ProTrackerEngine and verifying institutional rules repository...")
+        logger.info("Initializing ProTraderTracker and verifying institutional rules repository...")
 
     def fetch_pro_strategies(self):
         try:
@@ -88,10 +88,9 @@ class ProTrackerEngine:
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
 
-# Alias class to catch any imports looking for ProTraderTracker
-class ProTraderTracker(ProTrackerEngine):
-    pass
+# Backward compatibility alias
+ProTrackerEngine = ProTraderTracker
 
 if __name__ == "__main__":
-    tracker = ProTrackerEngine()
+    tracker = ProTraderTracker()
     tracker.run_daily_analysis()
