@@ -17,11 +17,9 @@ class ProTrackerEngine:
         self._ensure_pro_strategies_table()
 
     def _ensure_pro_strategies_table(self):
-        """Ensures institutional pro-trader rules are referenced or logged."""
         logger.info("Initializing ProTrackerEngine and verifying institutional rules repository...")
 
     def fetch_pro_strategies(self):
-        """Fetches codified elite trader rules from Supabase to guide signal evaluation."""
         try:
             response = self.supabase.table("pro_trader_strategies").select("*").eq("active", True).execute()
             return response.data if response.data else []
@@ -37,21 +35,16 @@ class ProTrackerEngine:
         return {
             "symbol": symbol,
             "consensus": "BULLISH" if score > 0 else "NEUTRAL",
-            "score": float(score * 45.0),  # Scales to strong institutional rating
+            "score": float(score * 45.0),
             "institutional_alignment": True,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
     def evaluate_market_against_pro_rules(self, symbol: str, current_price: float, indicators: dict) -> tuple:
-        """
-        Applies institutional principles (Simons' mean reversion, Soros' momentum, Unger's volatility filters)
-        to score and filter current market conditions.
-        """
         strategies = self.fetch_pro_strategies()
         score = 0
         feedback = []
 
-        # Default fallback if table is empty or uninitialized
         if not strategies:
             strategies = [
                 {"category": "Quantitative", "trader_name": "Jim Simons / Ed Thorp", "core_principle": "Statistical Arbitrage"},
@@ -84,7 +77,6 @@ class ProTrackerEngine:
         return score, feedback
 
     def run_daily_analysis(self):
-        """Runs day-to-day pro trader history analysis and weight evolution."""
         logger.info("Running day-to-day pro trader history analysis and weight evolution...")
         try:
             timestamp = datetime.utcnow().isoformat()
@@ -93,10 +85,12 @@ class ProTrackerEngine:
                 "status": "completed",
                 "notes": "Pro trader history analysis executed successfully."
             }
-            # Optional: push metrics or logs back to Supabase performance table
-            # self.supabase.table("weekly_performance_logs").insert(log_data).execute()
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
+
+# Alias class to catch any imports looking for ProTraderTracker
+class ProTraderTracker(ProTrackerEngine):
+    pass
 
 if __name__ == "__main__":
     tracker = ProTrackerEngine()
