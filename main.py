@@ -84,6 +84,24 @@ def record_pro_trader_history(sig: dict, score: int, feedback: dict | str):
     except Exception as exc:
         log.error(f"Failed to record pro-trader history: {exc}")
 
+def push_candles_to_supabase(sig: dict):
+    """Automatically logs historical candle price metrics into Supabase."""
+    if not supabase:
+        return
+    try:
+        candle_payload = {
+            "symbol": sig["symbol"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": float(sig.get("open", sig["current_price"])),
+            "high": float(sig.get("high", sig["current_price"])),
+            "low": float(sig.get("low", sig["current_price"])),
+            "close": float(sig["current_price"])
+        }
+        supabase.table("historical_candles").insert(candle_payload).execute()
+        log.info(f"Historical candle synced to Supabase for {sig['symbol']}")
+    except Exception as exc:
+        log.error(f"Historical candles sync error: {exc}")
+
 async def handle_ping(request):
     return web.Response(text="Trading Engine Running 24/7")
 
@@ -118,8 +136,9 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     sig["symbol"], sig["current_price"], indicators
                 )
                 
-                # Automatically log pro trader history and current details
+                # Automatically log data into Supabase tables
                 record_pro_trader_history(sig, score, feedback)
+                push_candles_to_supabase(sig)
                 
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
