@@ -65,6 +65,25 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
     except Exception as exc:
         log.error(f"Supabase queue error: {exc}")
 
+def record_pro_trader_history(sig: dict, score: int, feedback: dict | str):
+    """Automatically records professional trader history and details into Supabase."""
+    if not supabase:
+        return
+    try:
+        history_payload = {
+            "trader_name": "Institutional_Pro_Consensus",
+            "symbol": sig["symbol"],
+            "action": sig["action"],
+            "entry_price": float(sig["current_price"]),
+            "institutional_score": score,
+            "feedback": str(feedback),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        supabase.table("pro_trader_history").insert(history_payload).execute()
+        log.info(f"Pro-trader history recorded for {sig['symbol']} in Supabase.")
+    except Exception as exc:
+        log.error(f"Failed to record pro-trader history: {exc}")
+
 async def handle_ping(request):
     return web.Response(text="Trading Engine Running 24/7")
 
@@ -99,7 +118,9 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     sig["symbol"], sig["current_price"], indicators
                 )
                 
-                # Append institutional feedback into telegram formatting if desired
+                # Automatically log pro trader history and current details
+                record_pro_trader_history(sig, score, feedback)
+                
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
                 
