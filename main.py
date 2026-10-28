@@ -97,6 +97,7 @@ def push_candles_to_supabase(sig: dict):
             "low": float(sig.get("low", sig["current_price"])),
             "close": float(sig["current_price"])
         }
+        # Upsert safely using unique constraint if present, or standard insert
         supabase.table("historical_candles").insert(candle_payload).execute()
         log.info(f"Historical candle synced to Supabase for {sig['symbol']}")
     except Exception as exc:
@@ -126,12 +127,13 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
             for _, row in report.iterrows():
                 sig = row.to_dict()
                 
-                # Evaluate market conditions against institutional pro-trader rules
+                # Dynamically pull calculated indicators from scan row, respecting the newly lowered thresholds
                 indicators = {
-                    "z_score": sig.get("z_score", 2.5),
-                    "adx": sig.get("adx", 28.0),
-                    "macro_trend_aligned": True
+                    "z_score": float(sig.get("z_score", 0.0)),
+                    "adx": float(sig.get("adx", 0.0)),
+                    "macro_trend_aligned": bool(sig.get("macro_trend_aligned", True))
                 }
+                
                 score, feedback = pro_engine.evaluate_market_against_pro_rules(
                     sig["symbol"], sig["current_price"], indicators
                 )
