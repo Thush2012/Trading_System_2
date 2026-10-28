@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime, timezone
+import ccxt
 from supabase import create_client
 
 logger = logging.getLogger("ProTrackerEngine")
@@ -57,13 +58,13 @@ class ProTraderTracker:
             
             if category == 'Quantitative':
                 z_score = indicators.get('z_score', 0.0)
-                if abs(z_score) > 1.2:  # Adjusted from 2.0 to catch more setups
+                if abs(z_score) > 1.2:  # Adjusted threshold to catch more setups
                     score += 1
                     feedback.append(f"Matched {trader} Statistical Arbitrage threshold (Z-Score: {z_score:.2f}).")
                     
             elif category == 'Systematic Discipline':
                 adx = indicators.get('adx', 0.0)
-                if adx >= 15.0:  # Adjusted from 25.0 to allow developing trends
+                if adx >= 15.0:  # Adjusted threshold to allow developing trends
                     score += 1
                     feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 15).")
             
@@ -75,6 +76,34 @@ class ProTraderTracker:
 
         logger.info(f"[{symbol}] Pro-Trader Confluence Score: {score}/{len(strategies)}")
         return score, feedback
+
+    def fetch_and_store_historical_candles(self, symbol="BTC/USDT", timeframe="1d", limit=365):
+        """Fetches past multi-year/daily market charts and upserts them into Supabase historical_candles."""
+        logger.info(f"Fetching historical candles for {symbol} ({timeframe})...")
+        try:
+            exchange = ccxt.binance()
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            for candle in ohlcv:
+                timestamp_ms, open_p, high_p, low_p, close_p, volume = candle
+                candle_date = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+                
+                payload = {
+                    "symbol": symbol,
+                    "timestamp": candle_date,
+                    "open": float(open_p),
+                    "high": float(high_p),
+                    "low": float(low_p),
+                    "close": float(close_p),
+                    "volume": float(volume)
+                }
+                
+                # Upsert into Supabase (requires a unique constraint on symbol, timestamp)
+                self.supabase.table("historical_candles").upsert(payload, on_conflict="symbol,timestamp").execute()
+            
+            logger.info(f"Successfully updated historical candles for {symbol}.")
+        except Exception as e:
+            logger.error(f"Error fetching/storing historical candles for {symbol}: {e}")
 
     def run_daily_analysis(self):
         logger.info("Running day-to-day pro trader history analysis and weight evolution...")
@@ -96,7 +125,10 @@ class ProTraderTracker:
                 }
                 self.supabase.table("pro_trader_history").insert(payload).execute()
             
-            logger.info("Pro-trader history records successfully recorded to Supabase.")
+            # Automatically populate historical chart candles on run
+            self.fetch_and_store_historical_candles(symbol="BTC/USDT", timeframe="1d", limit=365)
+            
+            logger.info("Pro-trader history and historical candles successfully recorded to Supabase.")
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
 
