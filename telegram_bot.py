@@ -34,7 +34,7 @@ def format_detailed_signal(row: dict) -> str:
     tf_4h = row.get('trend_4h', 'BULLISH')
 
     return (
-        f"📊 *DETAILED SIGNAL: {row['symbol']}* ({asset_badge})\n"
+        f"📊 *DETAILED SIGNAL: {row['symbol']} ({asset_badge})*\n"
         f"Mode: {mode_badge}\n"
         f"Direction: *{row['action']}*\n\n"
         f"📍 *Entry Zone:* `{entry_low} - {entry_high}`\n"
@@ -94,7 +94,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 *Running Institutional Multi-Asset Scan...*", parse_mode="Markdown")
     df = await global_scanner.scan_all(bypass_cooldown=True, enforce_window=False)
-    if df.empty:
+    if df is None or df.empty:
         await update.message.reply_text("⚪ *No Qualified Setups Right Now.*", parse_mode="Markdown")
         return
 
