@@ -57,15 +57,15 @@ class ProTraderTracker:
             
             if category == 'Quantitative':
                 z_score = indicators.get('z_score', 0.0)
-                if abs(z_score) > 2.0:
+                if abs(z_score) > 1.2:  # Adjusted from 2.0 to catch more setups
                     score += 1
                     feedback.append(f"Matched {trader} Statistical Arbitrage threshold (Z-Score: {z_score:.2f}).")
                     
             elif category == 'Systematic Discipline':
                 adx = indicators.get('adx', 0.0)
-                if adx >= 25.0:
+                if adx >= 15.0:  # Adjusted from 25.0 to allow developing trends
                     score += 1
-                    feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 25).")
+                    feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 15).")
             
             elif category == 'Global Macro':
                 trend_alignment = indicators.get('macro_trend_aligned', True)
