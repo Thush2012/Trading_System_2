@@ -71,7 +71,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💎 *Institutional Pro Trading & Memory Engine*\n\n"
         f"• *Monitored Assets:* {FOREX_PAIRS_DISPLAY}\n"
         "• *Features:* Pro Tracking, NLP News Guard, Partial Closes, Inline Controls\n"
-        "• *Execution Window:* Mon–Fri, 8:00 AM – 9:30 PM SLT"
+        "• *Execution Window:* 24/7 Active Execution"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
@@ -124,23 +124,6 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
-async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text(
-            "⚙️ *Risk Management Tuning*\n\n"
-            "Usage: `/risk 0.5` or `/risk 1.0`\n"
-            "Current Default Risk: `1.0%` per trade.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    risk_level = context.args[0]
-    await update.message.reply_text(
-        f"✅ *Per-Trade Risk Successfully Updated to:* `{risk_level}%`",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
-    )
-
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -163,6 +146,6 @@ async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "📊 Weekly Performance Report":
         await update.message.reply_text("📊 *Weekly Report:* Win Rate: 72% | Net PNL: +$18.40 | Self-learning active.", parse_mode="Markdown")
     elif text == "🕒 Trading Hours":
-        await update.message.reply_text("🕒 Mon–Fri, 8:00 AM – 9:30 PM SLT (Excluding 6:30–8:30 PM Power Cut).", parse_mode="Markdown")
+        await update.message.reply_text("🕒 24/7 Active Execution Window Enabled.", parse_mode="Markdown")
     elif text == "🛡️ Daily Target & Memory":
         await update.message.reply_text("🛡️ Daily Target: $3-$5 (Locked at +$4.00). Loss Memory & Pro Filters Active.", parse_mode="Markdown")
