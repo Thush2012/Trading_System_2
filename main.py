@@ -97,7 +97,6 @@ def push_candles_to_supabase(sig: dict):
             "low": float(sig.get("low", sig["current_price"])),
             "close": float(sig["current_price"])
         }
-        # Upsert safely using unique constraint if present, or standard insert
         supabase.table("historical_candles").insert(candle_payload).execute()
         log.info(f"Historical candle synced to Supabase for {sig['symbol']}")
     except Exception as exc:
@@ -123,11 +122,13 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=event["msg"], parse_mode="Markdown")
 
         report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
-        if not report.empty:
+        setup_count = len(report) if report is not None and not report.empty else 0
+        log.info(f"Scan complete. Found {setup_count} raw setups.")
+
+        if report is not None and not report.empty:
             for _, row in report.iterrows():
                 sig = row.to_dict()
                 
-                # Dynamically pull calculated indicators from scan row, respecting the newly lowered thresholds
                 indicators = {
                     "z_score": float(sig.get("z_score", 0.0)),
                     "adx": float(sig.get("adx", 0.0)),
@@ -138,7 +139,6 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     sig["symbol"], sig["current_price"], indicators
                 )
                 
-                # Automatically log data into Supabase tables
                 record_pro_trader_history(sig, score, feedback)
                 push_candles_to_supabase(sig)
                 
