@@ -37,21 +37,12 @@ DAILY_MAX_LOSS_CAP_USD = -3.00
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
 
 def is_execution_window_active() -> tuple[bool, str]:
-    """Ensures orders execute Mon-Fri from 8:00 AM to 9:30 PM SLT, blocking 6:30-8:30 PM power cut."""
+    """Allows 24/5 execution from Monday to Friday, blocking only weekends."""
     now = datetime.now(LOCAL_TZ)
     if now.weekday() >= 5:
         return False, "Weekend Standby (Saturday/Sunday)."
 
-    current_decimal_hour = now.hour + (now.minute / 60.0)
-    is_in_span = 8.0 <= current_decimal_hour <= 21.5
-    is_power_cut = 18.5 <= current_decimal_hour <= 20.5
-
-    if not is_in_span:
-        return False, f"Outside trading hours ({now.strftime('%I:%M %p')} SLT)."
-    if is_power_cut:
-        return False, "Power cut blackout active (6:30 PM - 8:30 PM SLT)."
-
-    return True, "Window Active"
+    return True, "24/5 Window Active"
 
 def check_daily_pnl_limits() -> tuple[bool, str, float]:
     now = datetime.now()
@@ -257,7 +248,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     binance_exchange = initialize_binance()
 
-    log.info("Dual-Asset Local Executor active with Break-Even Manager. Polling Supabase...")
+    log.info("Dual-Asset Local Executor active 24/5 with Break-Even Manager. Polling Supabase...")
 
     while True:
         try:
