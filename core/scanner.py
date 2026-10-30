@@ -46,7 +46,7 @@ class LightweightScanner:
         
         # ADX 14 approximation
         up_move = df["high"] - df["high"].shift(1)
-        down_move = df["low"].shift(1) - df["low"]
+        down_move = df["low"] - df["low"]
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
         tr_smooth = tr.rolling(window=14, min_periods=14).mean()
@@ -104,10 +104,17 @@ class LightweightScanner:
                     sl_pips = round(abs(current_price - sl) * (10000 if "JPY" not in symbol else 100), 1)
                     tp_pips = round(abs(tp - current_price) * (10000 if "JPY" not in symbol else 100), 1)
                     
+                    # Define entry zone boundaries
+                    entry_low = round(current_price - (0.15 * atr), 5)
+                    entry_high = round(current_price + (0.15 * atr), 5)
+
                     scanned_data.append({
                         "symbol": symbol,
                         "action": action,
                         "current_price": current_price,
+                        "entry_price": current_price,
+                        "entry_low": entry_low,
+                        "entry_high": entry_high,
                         "open": float(curr["open"]),
                         "high": float(curr["high"]),
                         "low": float(curr["low"]),
