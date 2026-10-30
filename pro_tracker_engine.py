@@ -72,7 +72,7 @@ class ProTraderTracker:
         return score, feedback
 
     def fetch_and_store_historical_candles(self, symbol="BTC/USDT", timeframe="1d", limit=365):
-        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)."""
+        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)[cite: 3, 4]."""
         logger.info(f"Fetching historical candles for {symbol} ({timeframe})...")
         try:
             yf_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else f"{symbol.replace('/', '')}=X")
@@ -105,8 +105,8 @@ class ProTraderTracker:
             strategies = self.fetch_pro_strategies()
             if not strategies:
                 strategies = [
-                    {"trder_name": "Jim Simons / Ed Thorp", "symbol": "BTCUSDT", "action": "BUY", "entry_price": 0.0},
-                    {"trder_name": "Andrea Unger", "symbol": "EURUSD", "action": "SELL", "entry_price": 1.0850}
+                    {"trader_name": "Jim Simons / Ed Thorp", "symbol": "BTCUSDT", "action": "BUY", "entry_price": 0.0},
+                    {"trader_name": "Andrea Unger", "symbol": "EURUSD", "action": "SELL", "entry_price": 1.0850}
                 ]
             for strat in strategies:
                 payload = {
