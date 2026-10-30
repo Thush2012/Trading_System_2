@@ -93,9 +93,9 @@ class LightweightScanner:
                 
                 # Evaluation logic for signals
                 action = None
-                if current_price > curr["ema200"] and curr["ema20"] > curr["ema50"] and 48 <= rsi <= 68 and abs(z_score) > 1.2:
+                if current_price > curr["ema200"] and curr["ema20"] > curr["ema50"] and 48 <= rsi <= 68 and abs(z_score) > 2.0 and adx >= 25.0:
                     action = "BUY"
-                elif current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 1.2:
+                elif current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 2.0 and adx >= 25.0:
                     action = "SELL"
                 
                 if action:
