@@ -148,4 +148,4 @@ async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "🕒 Trading Hours":
         await update.message.reply_text("🕒 24/7 Active Execution Window Enabled.", parse_mode="Markdown")
     elif text == "🛡️ Daily Target & Memory":
-        await update.message.reply_text("🛡️ Daily Target: $3-$5 (Locked at +$4.00). Loss Memory & Pro Filters Active.", parse_mode="Markdown")
+        await update.message.reply_text("🛡️ Daily Target: +$10.00 (Locked at target). Loss Memory & Pro Filters Active.", parse_mode="Markdown")
