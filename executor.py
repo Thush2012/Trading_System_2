@@ -188,7 +188,7 @@ def execute_crypto_order(exchange, sig: dict):
         return False, str(e)
 
 def execute_forex_order(sig: dict):
-    """Executes forex orders on MT5."""
+    """Executes forex orders on MT5 with Direction-Flip Reversal Support."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -205,22 +205,55 @@ def execute_forex_order(sig: dict):
     except Exception:
         pass
 
-    symbol = f"{sig['symbol']}{SYMBOL_SUFFIX}"
-    if not mt5.symbol_select(symbol, True):
+    symbol_raw = sig["symbol"]
+    broker_symbol = f"{symbol_raw}{SYMBOL_SUFFIX}"
+
+    if not mt5.symbol_select(broker_symbol, True):
+        log.error(f"Symbol {broker_symbol} not found in Market Watch.")
         return False, "SYMBOL_NOT_FOUND"
     
-    tick = mt5.symbol_info_tick(symbol)
+    tick = mt5.symbol_info_tick(broker_symbol)
     if not tick:
         return False, "LIVE_TICK_UNAVAILABLE"
         
-    is_buy = "BUY" in sig["action"].upper()
+    action = sig["action"].upper()
+    is_buy = "BUY" in action
     price = tick.ask if is_buy else tick.bid
-    sym_info = mt5.symbol_info(symbol)
+    sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
+
+    # Check existing positions for duplicate filtering or direction flips
+    positions = mt5.positions_get(symbol=broker_symbol)
+    if positions and len(positions) > 0:
+        current_pos = positions[0]
+        pos_is_buy = (current_pos.type == mt5.POSITION_TYPE_BUY)
+        
+        # Rule: If the signal direction is the SAME as the open trade, skip duplicate
+        if pos_is_buy == is_buy:
+            return False, "DUPLICATE_DIRECTION_ACTIVE"
+        else:
+            # Rule: If the direction FLIPS (e.g. from BUY to SELL), close the old trade immediately
+            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position # {current_pos.ticket} to switch direction.")
+            request_close = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": broker_symbol,
+                "volume": current_pos.volume,
+                "type": mt5.ORDER_TYPE_SELL if pos_is_buy else mt5.ORDER_TYPE_BUY,
+                "position": current_pos.ticket,
+                "price": tick.bid if pos_is_buy else tick.ask,
+                "deviation": 50,
+                "magic": 992026,
+                "comment": "DirectionFlip_Close",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            close_res = mt5.order_send(request_close)
+            if close_res.retcode != mt5.TRADE_RETCODE_DONE:
+                log.warning(f"Failed to close counter-trend position during flip: {close_res.retcode}")
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
+        "symbol": broker_symbol,
         "volume": LOT_SIZE_FOREX,
         "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
         "price": round(price, digits),
@@ -228,16 +261,18 @@ def execute_forex_order(sig: dict):
         "tp": round(float(sig["tp"]), digits),
         "deviation": 50,
         "magic": 992026,
-        "comment": "DualAssetEngine",
+        "comment": f"ProEngine_{action}",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
     
     result = mt5.order_send(request)
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log.info(f"MT5 ORDER FILLED: #{result.order} {symbol}")
+        log.info(f"MT5 ORDER FILLED: #{result.order} {broker_symbol} {action}")
         return True, result.order
-    return False, f"RETCODE_{result.retcode}"
+    else:
+        log.error(f"MT5 order rejected on {broker_symbol}: Retcode {result.retcode} ({result.comment})")
+        return False, f"RETCODE_{result.retcode}: {result.comment}"
 
 def run_dual_executor():
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -248,7 +283,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     binance_exchange = initialize_binance()
 
-    log.info("Dual-Asset Local Executor active 24/5 with Break-Even Manager. Polling Supabase...")
+    log.info("Dual-Asset Local Executor active 24/5 with Direction-Flip & Break-Even Manager. Polling Supabase...")
 
     while True:
         try:

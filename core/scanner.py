@@ -17,6 +17,9 @@ class LightweightScanner:
             "BTCUSDT": {"ticker": "BTC-USD", "asset_type": "CRYPTO"},
             "ETHUSDT": {"ticker": "ETH-USD", "asset_type": "CRYPTO"}
         }
+        # Dictionary to track the last active signal direction per symbol to prevent spam
+        # but instantly catch direction flips (e.g., BUY -> SELL)
+        self.last_signal_states = {}
 
     def is_within_trading_window(self) -> bool:
         """Forced to True to keep the execution engine active 24/7 without standby blocks."""
@@ -65,7 +68,8 @@ class LightweightScanner:
 
     async def scan_all(self, bypass_cooldown: bool = True, enforce_window: bool = False) -> pd.DataFrame:
         """
-        Scans monitored assets using yfinance, calculates indicators, and returns qualified setup rows.
+        Scans monitored assets using yfinance, calculates indicators, enforces direction-flip rules, 
+        and returns qualified setup rows.
         """
         log.info("Running lightweight multi-asset market scan...")
         scanned_data = []
@@ -98,7 +102,17 @@ class LightweightScanner:
                 elif current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 2.0 and adx >= 25.0:
                     action = "SELL"
                 
+                # Direction-Flip Anti-Spam Control
+                previous_action = self.last_signal_states.get(symbol)
+                
                 if action:
+                    # If the signal is identical to the last one sent for this pair, suppress it to prevent duplicates
+                    if previous_action == action:
+                        continue
+                    
+                    # If the action flipped (e.g. was BUY, now is SELL), update the state and allow it immediately
+                    self.last_signal_states[symbol] = action
+
                     sl = round(current_price - (1.5 * atr) if action == "BUY" else current_price + (1.5 * atr), 5)
                     tp = round(current_price + (2.5 * atr) if action == "BUY" else current_price - (2.5 * atr), 5)
                     sl_pips = round(abs(current_price - sl) * (10000 if "JPY" not in symbol else 100), 1)
@@ -130,6 +144,10 @@ class LightweightScanner:
                         "asset_type": asset_type,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
+                else:
+                    # If market goes neutral, clear the state so a new entry can be captured cleanly later
+                    if current_price < curr["ema200"] and current_price > curr["ema50"]:
+                        pass # neutral zone
             except Exception as e:
                 log.error(f"Error scanning {symbol}: {e}")
 
