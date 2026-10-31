@@ -164,7 +164,7 @@ def manage_active_mt5_positions():
         log.error(f"Error in manage_active_mt5_positions: {e}")
 
 def execute_crypto_order(exchange, sig: dict):
-    """Executes crypto futures orders on Binance Demo via CCXT."""
+    """Executes crypto futures orders on Binance Demo via CCXT with attached TP and SL."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -175,13 +175,29 @@ def execute_crypto_order(exchange, sig: dict):
         action = sig["action"].upper()
         side = 'buy' if 'BUY' in action else 'sell'
         
+        sl = float(sig["sl"])
+        tp = float(sig["tp"])
+
+        # Attach Stop Loss and Take Profit parameters directly to the market order
+        params = {
+            'stopLoss': {
+                'triggerPrice': sl,
+                'price': sl,
+            },
+            'takeProfit': {
+                'triggerPrice': tp,
+                'price': tp,
+            }
+        }
+        
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
             side=side,
-            amount=CRYPTO_QTY
+            amount=CRYPTO_QTY,
+            params=params
         )
-        log.info(f"BINANCE DEMO ORDER FILLED: {order['id']} {symbol_ccxt} {side}")
+        log.info(f"BINANCE DEMO ORDER FILLED WITH TP/SL: {order['id']} {symbol_ccxt} {side} | SL: {sl} | TP: {tp}")
         return True, order['id']
     except Exception as e:
         log.error(f"Binance order error: {e}")
@@ -233,7 +249,7 @@ def execute_forex_order(sig: dict):
             return False, "DUPLICATE_DIRECTION_ACTIVE"
         else:
             # Rule: If the direction FLIPS (e.g. from BUY to SELL), close the old trade immediately
-            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position # {current_pos.ticket} to switch direction.")
+            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket} to switch direction.")
             request_close = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": broker_symbol,
