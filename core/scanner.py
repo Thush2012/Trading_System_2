@@ -4,9 +4,9 @@ import logging
 from datetime import datetime, timezone
 import yfinance as yf
 
-log = logging.getLogger("InstitutionalScanner")
+log = logging.getLogger("LightweightScanner")
 
-class InstitutionalScanner:
+class LightweightScanner:
     def __init__(self):
         self.market_map = {
             "USDJPY": {"ticker": "USDJPY=X", "asset_type": "FOREX"},
@@ -17,7 +17,6 @@ class InstitutionalScanner:
             "BTCUSDT": {"ticker": "BTC-USD", "asset_type": "CRYPTO"},
             "ETHUSDT": {"ticker": "ETH-USD", "asset_type": "CRYPTO"}
         }
-        # Tracks active signal state to instantly catch reversals while preventing duplicate spam
         self.last_signal_states = {}
 
     def is_within_trading_window(self) -> bool:
