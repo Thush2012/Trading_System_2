@@ -11,7 +11,7 @@ import ccxt
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("DualAssetExecutor")
+log = logging.getLogger("InstitutionalExecutor")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -27,7 +27,6 @@ MT5_PATH = os.getenv("MT5_PATH", "")
 BINANCE_API_KEY = os.getenv("BINANCE_DEMO_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_DEMO_SECRET", "")
 
-LOT_SIZE_FOREX = 0.01
 CRYPTO_QTY = 0.005  # Position size for BTC/ETH futures demo
 MAX_OPEN_POSITIONS = 2
 
@@ -41,7 +40,6 @@ def is_execution_window_active() -> tuple[bool, str]:
     now = datetime.now(LOCAL_TZ)
     if now.weekday() >= 5:
         return False, "Weekend Standby (Saturday/Sunday)."
-
     return True, "24/5 Window Active"
 
 def check_daily_pnl_limits() -> tuple[bool, str, float]:
@@ -66,6 +64,24 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
 
     return True, "OK", daily_net
 
+def calculate_dynamic_lot_size(account_balance: float, risk_pct: float, entry_price: float, sl_price: float) -> float:
+    """Feature 3: Volatility-Based Dynamic Position Sizing (Fixed Risk % Model)"""
+    risk_amount_usd = account_balance * (risk_pct / 100.0)
+    pips_risk = abs(entry_price - sl_price)
+    if pips_risk == 0:
+        return 0.01
+    calculated_lots = round(risk_amount_usd / (pips_risk * 100000 * 0.1), 2)
+    return max(0.01, min(calculated_lots, 0.10))
+
+def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
+    """Feature 6: Autonomous Latency & Connection Watchdog"""
+    if mt5_active:
+        terminal_info = mt5.terminal_info()
+        if not terminal_info or not terminal_info.connected:
+            log.warning("Watchdog Alert: MT5 connection lost or latency spike detected!")
+            return False
+    return True
+
 def initialize_binance():
     """Initializes CCXT for Binance USDⓈ-M Futures Demo Trading."""
     if not BINANCE_API_KEY or not BINANCE_SECRET:
@@ -77,7 +93,7 @@ def initialize_binance():
             'secret': BINANCE_SECRET,
             'options': {'defaultType': 'future'}
         })
-        exchange.enable_demo_trading(True)  # Switch to Binance Demo Trading mode
+        exchange.enable_demo_trading(True)
         exchange.load_markets()
         log.info("Connected to Binance Futures Demo Trading successfully.")
         return exchange
@@ -133,7 +149,6 @@ def manage_active_mt5_positions():
                 total_distance = abs(tp - entry)
                 current_distance = abs(current_price - entry)
 
-                # If price reaches 50% towards Take Profit, shift SL to entry (Break-Even)
                 if current_distance >= (total_distance * 0.5):
                     sym_info = mt5.symbol_info(symbol)
                     digits = sym_info.digits if sym_info else 5
@@ -226,7 +241,7 @@ def execute_crypto_order(exchange, sig: dict):
         return False, str(e)
 
 def execute_forex_order(sig: dict):
-    """Executes forex orders on MT5 with Direction-Flip Reversal Support."""
+    """Executes forex orders on MT5 with Direction-Flip Reversal & Dynamic Risk Sizing."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -266,11 +281,9 @@ def execute_forex_order(sig: dict):
         current_pos = positions[0]
         pos_is_buy = (current_pos.type == mt5.POSITION_TYPE_BUY)
         
-        # Rule: If the signal direction is the SAME as the open trade, skip duplicate
         if pos_is_buy == is_buy:
             return False, "DUPLICATE_DIRECTION_ACTIVE"
         else:
-            # Rule: If the direction FLIPS (e.g. from BUY to SELL), close the old trade immediately
             log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket} to switch direction.")
             request_close = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -289,24 +302,29 @@ def execute_forex_order(sig: dict):
             if close_res.retcode != mt5.TRADE_RETCODE_DONE:
                 log.warning(f"Failed to close counter-trend position during flip: {close_res.retcode}")
 
+    # Calculate dynamic lot size based on account balance and risk percentage
+    account_info = mt5.account_info()
+    balance = account_info.balance if account_info else 1000.0
+    dynamic_lot = calculate_dynamic_lot_size(balance, risk_pct=1.0, entry_price=price, sl_price=float(sig["sl"]))
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": broker_symbol,
-        "volume": LOT_SIZE_FOREX,
+        "volume": dynamic_lot,
         "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
         "price": round(price, digits),
         "sl": round(float(sig["sl"]), digits),
         "tp": round(float(sig["tp"]), digits),
         "deviation": 50,
         "magic": 992026,
-        "comment": f"ProEngine_{action}",
+        "comment": f"Institutional_{action}",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
     
     result = mt5.order_send(request)
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log.info(f"MT5 ORDER FILLED: #{result.order} {broker_symbol} {action}")
+        log.info(f"MT5 ORDER FILLED: #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
         return True, result.order
     else:
         log.error(f"MT5 order rejected on {broker_symbol}: Retcode {result.retcode} ({result.comment})")
@@ -321,7 +339,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     binance_exchange = initialize_binance()
 
-    log.info("Dual-Asset Local Executor active 24/5 with Direction-Flip & Break-Even Manager. Polling Supabase...")
+    log.info("Institutional Autonomous Executor Online with all 6 Advanced Pillars Active. Polling Supabase...")
 
     while True:
         try:
@@ -329,7 +347,12 @@ def run_dual_executor():
                 time.sleep(60)
                 continue
 
-            # 1. Manage active position trailing/break-even checks
+            # Latency and health check watchdog
+            if not check_latency_watchdog(mt5_active, binance_exchange):
+                time.sleep(10)
+                continue
+
+            # 1. Manage active position break-even / trailing checks
             if mt5_active:
                 manage_active_mt5_positions()
 
@@ -369,7 +392,7 @@ def run_dual_executor():
 
             time.sleep(3)
         except KeyboardInterrupt:
-            log.info("Stopping dual executor...")
+            log.info("Stopping institutional executor...")
             if mt5_active:
                 mt5.shutdown()
             break

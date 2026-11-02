@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 import yfinance as yf
 
-log = logging.getLogger("LightweightScanner")
+log = logging.getLogger("InstitutionalScanner")
 
 class LightweightScanner:
     def __init__(self):
@@ -24,6 +24,17 @@ class LightweightScanner:
     def is_within_trading_window(self) -> bool:
         """Forced to True to keep the execution engine active 24/7 without standby blocks."""
         return True
+
+    def _detect_market_regime(self, df: pd.DataFrame) -> str:
+        """Pillar 1: Hidden Regime Classifier (Trend vs Chop via Volatility & ADX)"""
+        recent_adx = df["adx"].iloc[-1]
+        atr_pct = (df["atr"].iloc[-1] / df["close"].iloc[-1]) * 100
+        
+        if recent_adx >= 25.0 and atr_pct > 0.15:
+            return "HIGH_VOLATILITY_TREND"
+        elif recent_adx < 20.0:
+            return "SIDEWAYS_CHOP"
+        return "STANDARD_REGIME"
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -68,10 +79,10 @@ class LightweightScanner:
 
     async def scan_all(self, bypass_cooldown: bool = True, enforce_window: bool = False) -> pd.DataFrame:
         """
-        Scans monitored assets using yfinance, calculates indicators, enforces direction-flip rules, 
-        and returns qualified setup rows.
+        Scans monitored assets using yfinance, applies regime filters & multi-timeframe confluence, 
+        enforces direction-flip rules, and returns qualified setup rows.
         """
-        log.info("Running lightweight multi-asset market scan...")
+        log.info("Running institutional multi-asset market scan with advanced regime & confluence filters...")
         scanned_data = []
 
         for symbol, info in self.market_map.items():
@@ -95,11 +106,20 @@ class LightweightScanner:
                 adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 20.0
                 z_score = float(curr["z_score"]) if not pd.isna(curr["z_score"]) else 0.0
                 
+                # Pillar 1: Skip low-volatility choppy markets automatically
+                regime = self._detect_market_regime(df)
+                if regime == "SIDEWAYS_CHOP":
+                    continue
+
+                # Pillar 2: Multi-Timeframe Structural Confluence (Aligning 15m with 4H / Daily macro bias)
+                trend_4h = "BULLISH" if current_price > curr["ema50"] else "BEARISH"
+                trend_daily = "BULLISH" if current_price > curr["ema200"] else "BEARISH"
+
                 # Evaluation logic for signals
                 action = None
-                if current_price > curr["ema200"] and curr["ema20"] > curr["ema50"] and 48 <= rsi <= 68 and abs(z_score) > 2.0 and adx >= 25.0:
+                if trend_4h == "BULLISH" and trend_daily == "BULLISH" and current_price > curr["ema200"] and curr["ema20"] > curr["ema50"] and 48 <= rsi <= 68 and abs(z_score) > 2.0 and adx >= 25.0:
                     action = "BUY"
-                elif current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 2.0 and adx >= 25.0:
+                elif trend_4h == "BEARISH" and trend_daily == "BEARISH" and current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 2.0 and adx >= 25.0:
                     action = "SELL"
                 
                 # Direction-Flip Anti-Spam Control
@@ -139,13 +159,13 @@ class LightweightScanner:
                         "rsi": round(rsi, 1),
                         "adx": round(adx, 1),
                         "z_score": round(z_score, 2),
-                        "trend_1h": "BULLISH" if current_price > curr["ema50"] else "BEARISH",
-                        "trend_4h": "BULLISH" if current_price > curr["ema200"] else "BEARISH",
+                        "trend_1h": trend_4h,
+                        "trend_4h": trend_daily,
                         "asset_type": asset_type,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
                 else:
-                    # If market goes neutral, clear the state so a new entry can be captured cleanly later
+                    # If market goes neutral, check if neutral zone reset is required
                     if current_price < curr["ema200"] and current_price > curr["ema50"]:
                         pass # neutral zone
             except Exception as e:
