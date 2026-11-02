@@ -227,6 +227,7 @@ def execute_crypto_order(exchange, sig: dict):
         return False, str(e)
 
 def execute_forex_order(sig: dict):
+    """Executes forex orders on MT5 with automated retries, slippage expansion, and margin validation."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -255,7 +256,6 @@ def execute_forex_order(sig: dict):
         
     action = sig["action"].upper()
     is_buy = "BUY" in action
-    price = tick.ask if is_buy else tick.bid
     sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
 
@@ -284,31 +284,54 @@ def execute_forex_order(sig: dict):
             mt5.order_send(request_close)
 
     account_info = mt5.account_info()
-    balance = account_info.balance if account_info else 1000.0
-    dynamic_lot = calculate_dynamic_lot_size(balance, risk_pct=1.0, entry_price=price, sl_price=float(sig["sl"]))
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": broker_symbol,
-        "volume": dynamic_lot,
-        "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
-        "price": round(price, digits),
-        "sl": round(float(sig["sl"]), digits),
-        "tp": round(float(sig["tp"]), digits),
-        "deviation": 50,
-        "magic": 992026,
-        "comment": f"Institutional_{action}",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-    
-    result = mt5.order_send(request)
-    if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log.info(f"MT5 ORDER FILLED: #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
-        return True, result.order
+    if account_info:
+        balance = account_info.balance
+        if account_info.margin_free < 10.0:
+            log.warning("Order aborted: Insufficient free margin in MT5 account.")
+            return False, "INSUFFICIENT_MARGIN"
     else:
-        log.error(f"MT5 order rejected on {broker_symbol}: Retcode {result.retcode} ({result.comment})")
-        return False, f"RETCODE_{result.retcode}: {result.comment}"
+        balance = 1000.0
+
+    dynamic_lot = calculate_dynamic_lot_size(balance, risk_pct=1.0, entry_price=(tick.ask if is_buy else tick.bid), sl_price=float(sig["sl"]))
+
+    max_retries = 3
+    deviation_steps = [30, 75, 150]
+
+    for attempt in range(max_retries):
+        current_tick = mt5.symbol_info_tick(broker_symbol)
+        if not current_tick:
+            continue
+            
+        price = current_tick.ask if is_buy else current_tick.bid
+        deviation = deviation_steps[attempt]
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": broker_symbol,
+            "volume": dynamic_lot,
+            "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+            "price": round(price, digits),
+            "sl": round(float(sig["sl"]), digits),
+            "tp": round(float(sig["tp"]), digits),
+            "deviation": deviation,
+            "magic": 992026,
+            "comment": f"Institutional_{action}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        result = mt5.order_send(request)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info(f"MT5 ORDER FILLED (Attempt {attempt+1}): #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot} | Deviation: {deviation}")
+            return True, result.order
+        else:
+            retcode = result.retcode if result else "UNKNOWN"
+            comment = result.comment if result else "No response"
+            log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment}). Retrying with higher deviation...")
+            time.sleep(1)
+
+    log.error(f"MT5 order permanently failed on {broker_symbol} after {max_retries} attempts.")
+    return False, "MAX_RETRIES_EXCEEDED"
 
 def run_dual_executor():
     if not SUPABASE_URL or not SUPABASE_KEY:
