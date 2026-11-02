@@ -6,7 +6,7 @@ import yfinance as yf
 
 log = logging.getLogger("InstitutionalScanner")
 
-class LightweightScanner:
+class InstitutionalScanner:
     def __init__(self):
         self.market_map = {
             "USDJPY": {"ticker": "USDJPY=X", "asset_type": "FOREX"},
@@ -17,12 +17,10 @@ class LightweightScanner:
             "BTCUSDT": {"ticker": "BTC-USD", "asset_type": "CRYPTO"},
             "ETHUSDT": {"ticker": "ETH-USD", "asset_type": "CRYPTO"}
         }
-        # Dictionary to track the last active signal direction per symbol to prevent spam
-        # but instantly catch direction flips (e.g., BUY -> SELL)
+        # Tracks active signal state to instantly catch reversals while preventing duplicate spam
         self.last_signal_states = {}
 
     def is_within_trading_window(self) -> bool:
-        """Forced to True to keep the execution engine active 24/7 without standby blocks."""
         return True
 
     def _detect_market_regime(self, df: pd.DataFrame) -> str:
@@ -46,9 +44,7 @@ class LightweightScanner:
         delta = df["close"].diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.rolling(window=14, min_periods=14).mean()
-        avg_loss = loss.rolling(window=14, min_periods=14).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rs = gain.rolling(14).mean() / loss.rolling(14).mean().replace(0, np.nan)
         df["rsi"] = 100 - (100 / (1 + rs))
         
         # ATR 14
@@ -56,118 +52,94 @@ class LightweightScanner:
         hc = (df["high"] - df["close"].shift()).abs()
         lc = (df["low"] - df["close"].shift()).abs()
         tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        df["atr"] = tr.rolling(window=14, min_periods=14).mean()
+        df["atr"] = tr.rolling(14).mean()
         
-        # ADX 14 approximation
+        # ADX 14
         up_move = df["high"] - df["high"].shift(1)
-        down_move = df["low"] - df["low"]
+        down_move = df["low"].shift(1) - df["low"]
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        tr_smooth = tr.rolling(window=14, min_periods=14).mean()
-        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=14).mean() / tr_smooth.replace(0, np.nan))
-        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=14).mean() / tr_smooth.replace(0, np.nan))
+        tr_smooth = tr.rolling(14).mean()
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(14).mean() / tr_smooth.replace(0, np.nan))
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(14).mean() / tr_smooth.replace(0, np.nan))
         dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
-        df["adx"] = dx.rolling(window=14).mean().fillna(20.0)
+        df["adx"] = dx.rolling(14).mean().fillna(20.0)
         
-        # Z-Score (20 period)
-        rolling_mean = df["close"].rolling(window=20).mean()
-        rolling_std = df["close"].rolling(window=20).std()
-        df["z_score"] = (df["close"] - rolling_mean) / rolling_std.replace(0, np.nan)
-        df["z_score"] = df["z_score"].fillna(0.0)
-        
+        # Z-Score
+        rolling_mean = df["close"].rolling(20).mean()
+        rolling_std = df["close"].rolling(20).std()
+        df["z_score"] = ((df["close"] - rolling_mean) / rolling_std.replace(0, np.nan)).fillna(0.0)
         return df
 
     async def scan_all(self, bypass_cooldown: bool = True, enforce_window: bool = False) -> pd.DataFrame:
-        """
-        Scans monitored assets using yfinance, applies regime filters & multi-timeframe confluence, 
-        enforces direction-flip rules, and returns qualified setup rows.
-        """
-        log.info("Running institutional multi-asset market scan with advanced regime & confluence filters...")
+        log.info("Running Institutional Multi-Tier Market Scan with Regime & Confluence Filters...")
         scanned_data = []
 
         for symbol, info in self.market_map.items():
-            ticker = info["ticker"]
-            asset_type = info["asset_type"]
             try:
-                df = yf.download(ticker, interval="15m", period="5d", progress=False)
+                df = yf.download(info["ticker"], interval="15m", period="5d", progress=False)
                 if df is None or df.empty or len(df) < 50:
                     continue
-                
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
                 df = self._calculate_indicators(df)
                 
                 curr = df.iloc[-1]
-                
                 current_price = float(curr["close"])
-                atr = float(curr["atr"]) if not pd.isna(curr["atr"]) and curr["atr"] > 0 else current_price * 0.002
-                rsi = float(curr["rsi"]) if not pd.isna(curr["rsi"]) else 50.0
-                adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else 20.0
-                z_score = float(curr["z_score"]) if not pd.isna(curr["z_score"]) else 0.0
-                
-                # Pillar 1: Skip low-volatility choppy markets automatically
                 regime = self._detect_market_regime(df)
+                
+                # Pillar 4: Suppress signals during choppy low-volatility regimes
                 if regime == "SIDEWAYS_CHOP":
                     continue
 
-                # Pillar 2: Multi-Timeframe Structural Confluence (Aligning 15m with 4H / Daily macro bias)
+                # Pillar 2: Multi-Timeframe Structural Confluence (4H & Daily approximation)
                 trend_4h = "BULLISH" if current_price > curr["ema50"] else "BEARISH"
                 trend_daily = "BULLISH" if current_price > curr["ema200"] else "BEARISH"
 
-                # Evaluation logic for signals
                 action = None
-                if trend_4h == "BULLISH" and trend_daily == "BULLISH" and current_price > curr["ema200"] and curr["ema20"] > curr["ema50"] and 48 <= rsi <= 68 and abs(z_score) > 2.0 and adx >= 25.0:
+                rsi = float(curr["rsi"])
+                z_score = float(curr["z_score"])
+                adx = float(curr["adx"])
+
+                if trend_4h == "BULLISH" and trend_daily == "BULLISH" and current_price > curr["ema200"] and 50 <= rsi <= 68 and z_score > 1.5 and adx >= 25.0:
                     action = "BUY"
-                elif trend_4h == "BEARISH" and trend_daily == "BEARISH" and current_price < curr["ema200"] and curr["ema20"] < curr["ema50"] and 32 <= rsi <= 52 and abs(z_score) > 2.0 and adx >= 25.0:
+                elif trend_4h == "BEARISH" and trend_daily == "BEARISH" and current_price < curr["ema200"] and 32 <= rsi <= 50 and z_score < -1.5 and adx >= 25.0:
                     action = "SELL"
-                
+
                 # Direction-Flip Anti-Spam Control
                 previous_action = self.last_signal_states.get(symbol)
-                
                 if action:
-                    # If the signal is identical to the last one sent for this pair, suppress it to prevent duplicates
                     if previous_action == action:
                         continue
-                    
-                    # If the action flipped (e.g. was BUY, now is SELL), update the state and allow it immediately
                     self.last_signal_states[symbol] = action
 
+                    atr = float(curr["atr"]) if not pd.isna(curr["atr"]) and curr["atr"] > 0 else current_price * 0.002
                     sl = round(current_price - (1.5 * atr) if action == "BUY" else current_price + (1.5 * atr), 5)
                     tp = round(current_price + (2.5 * atr) if action == "BUY" else current_price - (2.5 * atr), 5)
-                    sl_pips = round(abs(current_price - sl) * (10000 if "JPY" not in symbol else 100), 1)
-                    tp_pips = round(abs(tp - current_price) * (10000 if "JPY" not in symbol else 100), 1)
-                    
-                    # Define entry zone boundaries
-                    entry_low = round(current_price - (0.15 * atr), 5)
-                    entry_high = round(current_price + (0.15 * atr), 5)
 
                     scanned_data.append({
                         "symbol": symbol,
                         "action": action,
                         "current_price": current_price,
                         "entry_price": current_price,
-                        "entry_low": entry_low,
-                        "entry_high": entry_high,
+                        "entry_low": round(current_price - (0.15 * atr), 5),
+                        "entry_high": round(current_price + (0.15 * atr), 5),
                         "open": float(curr["open"]),
                         "high": float(curr["high"]),
                         "low": float(curr["low"]),
                         "sl": sl,
                         "tp": tp,
-                        "sl_pips": sl_pips,
-                        "tp_pips": tp_pips,
+                        "sl_pips": round(abs(current_price - sl) * (10000 if "JPY" not in symbol else 100), 1),
+                        "tp_pips": round(abs(tp - current_price) * (10000 if "JPY" not in symbol else 100), 1),
                         "rsi": round(rsi, 1),
                         "adx": round(adx, 1),
                         "z_score": round(z_score, 2),
                         "trend_1h": trend_4h,
                         "trend_4h": trend_daily,
-                        "asset_type": asset_type,
+                        "asset_type": info["asset_type"],
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
-                else:
-                    # If market goes neutral, check if neutral zone reset is required
-                    if current_price < curr["ema200"] and current_price > curr["ema50"]:
-                        pass # neutral zone
             except Exception as e:
                 log.error(f"Error scanning {symbol}: {e}")
 

@@ -16,14 +16,12 @@ log = logging.getLogger("InstitutionalExecutor")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# MT5 Details (Forex)
 MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
 SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
 MT5_PATH = os.getenv("MT5_PATH", "")
 
-# Binance Demo Details (Crypto)
 BINANCE_API_KEY = os.getenv("BINANCE_DEMO_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_DEMO_SECRET", "")
 
@@ -32,11 +30,9 @@ MAX_OPEN_POSITIONS = 2
 
 DAILY_PROFIT_TARGET_USD = 10.00
 DAILY_MAX_LOSS_CAP_USD = -3.00
-
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
 
 def is_execution_window_active() -> tuple[bool, str]:
-    """Allows 24/5 execution from Monday to Friday, blocking only weekends."""
     now = datetime.now(LOCAL_TZ)
     if now.weekday() >= 5:
         return False, "Weekend Standby (Saturday/Sunday)."
@@ -65,7 +61,7 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
     return True, "OK", daily_net
 
 def calculate_dynamic_lot_size(account_balance: float, risk_pct: float, entry_price: float, sl_price: float) -> float:
-    """Feature 3: Volatility-Based Dynamic Position Sizing (Fixed Risk % Model)"""
+    """Pillar 3: Volatility-Based Dynamic Position Sizing (Fixed Risk % Model)"""
     risk_amount_usd = account_balance * (risk_pct / 100.0)
     pips_risk = abs(entry_price - sl_price)
     if pips_risk == 0:
@@ -74,7 +70,7 @@ def calculate_dynamic_lot_size(account_balance: float, risk_pct: float, entry_pr
     return max(0.01, min(calculated_lots, 0.10))
 
 def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
-    """Feature 6: Autonomous Latency & Connection Watchdog"""
+    """Pillar 6: Autonomous Latency & Connection Watchdog"""
     if mt5_active:
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
@@ -83,7 +79,6 @@ def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
     return True
 
 def initialize_binance():
-    """Initializes CCXT for Binance USDⓈ-M Futures Demo Trading."""
     if not BINANCE_API_KEY or not BINANCE_SECRET:
         log.warning("Binance API keys missing in .env. Crypto execution skipped.")
         return None
@@ -179,13 +174,13 @@ def manage_active_mt5_positions():
         log.error(f"Error in manage_active_mt5_positions: {e}")
 
 def execute_crypto_order(exchange, sig: dict):
-    """Executes crypto futures orders on Binance Demo via CCXT and attaches SL/TP as separate reduce-only orders."""
+    """Pillar 5: Executes crypto futures orders on Binance Demo with separate reduce-only TP/SL orders."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
 
     try:
-        symbol_raw = sig["symbol"]  # e.g., BTCUSDT
+        symbol_raw = sig["symbol"]
         symbol_ccxt = f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
         action = sig["action"].upper()
         side = 'buy' if 'BUY' in action else 'sell'
@@ -194,7 +189,6 @@ def execute_crypto_order(exchange, sig: dict):
         sl = float(sig["sl"])
         tp = float(sig["tp"])
 
-        # 1. Execute the main market entry order
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
@@ -203,33 +197,25 @@ def execute_crypto_order(exchange, sig: dict):
         )
         log.info(f"BINANCE DEMO MARKET ORDER FILLED: {order['id']} {symbol_ccxt} {side}")
 
-        # 2. Immediately attach Stop Loss order (Reduce-Only)
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
                 type='stop_market',
                 side=close_side,
                 amount=CRYPTO_QTY,
-                params={
-                    'stopPrice': sl,
-                    'reduceOnly': True
-                }
+                params={'stopPrice': sl, 'reduceOnly': True}
             )
             log.info(f"Attached Stop Loss for {symbol_ccxt} at {sl}")
         except Exception as sl_err:
             log.error(f"Failed to attach Binance Stop Loss: {sl_err}")
 
-        # 3. Immediately attach Take Profit order (Reduce-Only)
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
                 type='take_profit_market',
                 side=close_side,
                 amount=CRYPTO_QTY,
-                params={
-                    'stopPrice': tp,
-                    'reduceOnly': True
-                }
+                params={'stopPrice': tp, 'reduceOnly': True}
             )
             log.info(f"Attached Take Profit for {symbol_ccxt} at {tp}")
         except Exception as tp_err:
@@ -241,7 +227,6 @@ def execute_crypto_order(exchange, sig: dict):
         return False, str(e)
 
 def execute_forex_order(sig: dict):
-    """Executes forex orders on MT5 with Direction-Flip Reversal & Dynamic Risk Sizing."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -250,7 +235,6 @@ def execute_forex_order(sig: dict):
     if not pnl_allowed:
         return False, pnl_reason
 
-    # Stale Signal Protection: Reject signals older than 90 seconds
     try:
         created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
         if (datetime.now(timezone.utc) - created_at).total_seconds() > 90:
@@ -275,7 +259,6 @@ def execute_forex_order(sig: dict):
     sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
 
-    # Check existing positions for duplicate filtering or direction flips
     positions = mt5.positions_get(symbol=broker_symbol)
     if positions and len(positions) > 0:
         current_pos = positions[0]
@@ -284,7 +267,7 @@ def execute_forex_order(sig: dict):
         if pos_is_buy == is_buy:
             return False, "DUPLICATE_DIRECTION_ACTIVE"
         else:
-            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket} to switch direction.")
+            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket}.")
             request_close = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": broker_symbol,
@@ -298,11 +281,8 @@ def execute_forex_order(sig: dict):
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            close_res = mt5.order_send(request_close)
-            if close_res.retcode != mt5.TRADE_RETCODE_DONE:
-                log.warning(f"Failed to close counter-trend position during flip: {close_res.retcode}")
+            mt5.order_send(request_close)
 
-    # Calculate dynamic lot size based on account balance and risk percentage
     account_info = mt5.account_info()
     balance = account_info.balance if account_info else 1000.0
     dynamic_lot = calculate_dynamic_lot_size(balance, risk_pct=1.0, entry_price=price, sl_price=float(sig["sl"]))
@@ -347,16 +327,13 @@ def run_dual_executor():
                 time.sleep(60)
                 continue
 
-            # Latency and health check watchdog
             if not check_latency_watchdog(mt5_active, binance_exchange):
                 time.sleep(10)
                 continue
 
-            # 1. Manage active position break-even / trailing checks
             if mt5_active:
                 manage_active_mt5_positions()
 
-            # 2. Poll Supabase for pending trade signals
             res = (
                 supabase.table("trade_signals")
                 .select("*")
