@@ -164,7 +164,7 @@ def manage_active_mt5_positions():
         log.error(f"Error in manage_active_mt5_positions: {e}")
 
 def execute_crypto_order(exchange, sig: dict):
-    """Executes crypto futures orders on Binance Demo via CCXT with attached TP and SL."""
+    """Executes crypto futures orders on Binance Demo via CCXT and attaches SL/TP as separate reduce-only orders."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -174,30 +174,52 @@ def execute_crypto_order(exchange, sig: dict):
         symbol_ccxt = f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
         action = sig["action"].upper()
         side = 'buy' if 'BUY' in action else 'sell'
+        close_side = 'sell' if side == 'buy' else 'buy'
         
         sl = float(sig["sl"])
         tp = float(sig["tp"])
 
-        # Attach Stop Loss and Take Profit parameters directly to the market order
-        params = {
-            'stopLoss': {
-                'triggerPrice': sl,
-                'price': sl,
-            },
-            'takeProfit': {
-                'triggerPrice': tp,
-                'price': tp,
-            }
-        }
-        
+        # 1. Execute the main market entry order
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
             side=side,
-            amount=CRYPTO_QTY,
-            params=params
+            amount=CRYPTO_QTY
         )
-        log.info(f"BINANCE DEMO ORDER FILLED WITH TP/SL: {order['id']} {symbol_ccxt} {side} | SL: {sl} | TP: {tp}")
+        log.info(f"BINANCE DEMO MARKET ORDER FILLED: {order['id']} {symbol_ccxt} {side}")
+
+        # 2. Immediately attach Stop Loss order (Reduce-Only)
+        try:
+            exchange.create_order(
+                symbol=symbol_ccxt,
+                type='stop_market',
+                side=close_side,
+                amount=CRYPTO_QTY,
+                params={
+                    'stopPrice': sl,
+                    'reduceOnly': True
+                }
+            )
+            log.info(f"Attached Stop Loss for {symbol_ccxt} at {sl}")
+        except Exception as sl_err:
+            log.error(f"Failed to attach Binance Stop Loss: {sl_err}")
+
+        # 3. Immediately attach Take Profit order (Reduce-Only)
+        try:
+            exchange.create_order(
+                symbol=symbol_ccxt,
+                type='take_profit_market',
+                side=close_side,
+                amount=CRYPTO_QTY,
+                params={
+                    'stopPrice': tp,
+                    'reduceOnly': True
+                }
+            )
+            log.info(f"Attached Take Profit for {symbol_ccxt} at {tp}")
+        except Exception as tp_err:
+            log.error(f"Failed to attach Binance Take Profit: {tp_err}")
+
         return True, order['id']
     except Exception as e:
         log.error(f"Binance order error: {e}")
