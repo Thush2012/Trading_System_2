@@ -25,11 +25,11 @@ MT5_PATH = os.getenv("MT5_PATH", "")
 BINANCE_API_KEY = os.getenv("BINANCE_DEMO_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_DEMO_SECRET", "")
 
-CRYPTO_QTY = 0.005  # Position size for BTC/ETH futures demo
+CRYPTO_QTY = 0.001  # Minimized micro-quantity safe for a $10 account
 MAX_OPEN_POSITIONS = 2
 
-DAILY_PROFIT_TARGET_USD = 10.00
-DAILY_MAX_LOSS_CAP_USD = -3.00
+DAILY_PROFIT_TARGET_USD = 1.50   # Scaled appropriately for a $10 starting balance
+DAILY_MAX_LOSS_CAP_USD = -1.00   # Strict max loss safety net for $10
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
 
 def is_execution_window_active() -> tuple[bool, str]:
@@ -60,17 +60,16 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
 
     return True, "OK", daily_net
 
-def calculate_dynamic_lot_size(account_balance: float, risk_pct: float, entry_price: float, sl_price: float) -> float:
-    """Pillar 3: Volatility-Based Dynamic Position Sizing (Fixed Risk % Model)"""
+def calculate_safe_lot_size(account_balance: float, risk_pct: float, entry_price: float, sl_price: float) -> float:
+    """Safely calculates lot size with a strict cap of 0.01-0.02 to protect small $10 accounts."""
     risk_amount_usd = account_balance * (risk_pct / 100.0)
     pips_risk = abs(entry_price - sl_price)
     if pips_risk == 0:
         return 0.01
     calculated_lots = round(risk_amount_usd / (pips_risk * 100000 * 0.1), 2)
-    return max(0.01, min(calculated_lots, 0.10))
+    return max(0.01, min(calculated_lots, 0.02))
 
 def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
-    """Pillar 6: Autonomous Latency & Connection Watchdog"""
     if mt5_active:
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
@@ -90,7 +89,7 @@ def initialize_binance():
         })
         exchange.enable_demo_trading(True)
         exchange.load_markets()
-        log.info("Connected to Binance Futures Demo Trading successfully.")
+        log.info("Connected to Binance Futures successfully.")
         return exchange
     except Exception as e:
         log.error(f"Binance initialization failed: {e}")
@@ -121,7 +120,6 @@ def initialize_mt5() -> bool:
     return True
 
 def manage_active_mt5_positions():
-    """Autonomously monitors open MT5 positions and moves SL to break-even when 50% toward TP1."""
     try:
         positions = mt5.positions_get()
         if not positions:
@@ -174,11 +172,12 @@ def manage_active_mt5_positions():
         log.error(f"Error in manage_active_mt5_positions: {e}")
 
 def execute_crypto_order(exchange, sig: dict):
-    """Pillar 5: Executes crypto futures orders on Binance Demo with separate reduce-only TP/SL orders."""
+    """Executes crypto futures with 1x minimum leverage, isolated margin, and mandatory SL/TP binding."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
 
+    order_id = None
     try:
         symbol_raw = sig["symbol"]
         symbol_ccxt = f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
@@ -189,14 +188,30 @@ def execute_crypto_order(exchange, sig: dict):
         sl = float(sig["sl"])
         tp = float(sig["tp"])
 
+        # Force Minimum Leverage (1x) and Isolated Margin for $10 safety
+        try:
+            exchange.set_margin_mode('isolated', symbol_ccxt)
+        except Exception:
+            pass
+        try:
+            exchange.set_leverage(1, symbol_ccxt)  # Set to absolute minimum 1x leverage
+            log.info(f"Set Binance leverage to 1x minimum for {symbol_ccxt}")
+        except Exception as lev_err:
+            log.warning(f"Could not set 1x leverage explicitly: {lev_err}")
+
+        # 1. Main Market Order
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
             side=side,
             amount=CRYPTO_QTY
         )
-        log.info(f"BINANCE DEMO MARKET ORDER FILLED: {order['id']} {symbol_ccxt} {side}")
+        order_id = order['id']
+        log.info(f"BINANCE MARKET ORDER FILLED (1x Leverage): {order_id} {symbol_ccxt} {side}")
 
+        sl_success, tp_success = False, False
+
+        # 2. Attach Stop Loss
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
@@ -205,10 +220,12 @@ def execute_crypto_order(exchange, sig: dict):
                 amount=CRYPTO_QTY,
                 params={'stopPrice': sl, 'reduceOnly': True}
             )
+            sl_success = True
             log.info(f"Attached Stop Loss for {symbol_ccxt} at {sl}")
         except Exception as sl_err:
             log.error(f"Failed to attach Binance Stop Loss: {sl_err}")
 
+        # 3. Attach Take Profit
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
@@ -217,17 +234,29 @@ def execute_crypto_order(exchange, sig: dict):
                 amount=CRYPTO_QTY,
                 params={'stopPrice': tp, 'reduceOnly': True}
             )
+            tp_success = True
             log.info(f"Attached Take Profit for {symbol_ccxt} at {tp}")
         except Exception as tp_err:
             log.error(f"Failed to attach Binance Take Profit: {tp_err}")
 
-        return True, order['id']
+        # Safety Check: Emergency close if protective orders fail to attach
+        if not sl_success or not tp_success:
+            log.error(f"SAFETY ALERT: SL/TP failed to attach for {symbol_ccxt}. Executing emergency market close!")
+            exchange.create_order(
+                symbol=symbol_ccxt,
+                type='market',
+                side=close_side,
+                amount=CRYPTO_QTY,
+                params={'reduceOnly': True}
+            )
+            return False, "EMERGENCY_CLOSED_MISSING_SL_TP"
+
+        return True, order_id
     except Exception as e:
         log.error(f"Binance order error: {e}")
         return False, str(e)
 
 def execute_forex_order(sig: dict):
-    """Executes forex orders on MT5 with automated retries, slippage expansion, and margin validation."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
@@ -286,13 +315,13 @@ def execute_forex_order(sig: dict):
     account_info = mt5.account_info()
     if account_info:
         balance = account_info.balance
-        if account_info.margin_free < 10.0:
-            log.warning("Order aborted: Insufficient free margin in MT5 account.")
+        if account_info.margin_free < 2.0:
+            log.warning("Order aborted: Insufficient free margin in account.")
             return False, "INSUFFICIENT_MARGIN"
     else:
-        balance = 1000.0
+        balance = 10.0
 
-    dynamic_lot = calculate_dynamic_lot_size(balance, risk_pct=1.0, entry_price=(tick.ask if is_buy else tick.bid), sl_price=float(sig["sl"]))
+    dynamic_lot = calculate_safe_lot_size(balance, risk_pct=1.0, entry_price=(tick.ask if is_buy else tick.bid), sl_price=float(sig["sl"]))
 
     max_retries = 3
     deviation_steps = [30, 75, 150]
@@ -327,7 +356,7 @@ def execute_forex_order(sig: dict):
         else:
             retcode = result.retcode if result else "UNKNOWN"
             comment = result.comment if result else "No response"
-            log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment}). Retrying with higher deviation...")
+            log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment}). Retrying...")
             time.sleep(1)
 
     log.error(f"MT5 order permanently failed on {broker_symbol} after {max_retries} attempts.")
@@ -342,7 +371,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     binance_exchange = initialize_binance()
 
-    log.info("Institutional Autonomous Executor Online with all 6 Advanced Pillars Active. Polling Supabase...")
+    log.info("Institutional Executor Online with 1x Binance Leverage & $10 Safety Limits. Polling Supabase...")
 
     while True:
         try:
