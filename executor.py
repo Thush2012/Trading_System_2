@@ -11,7 +11,7 @@ import ccxt
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("InstitutionalExecutor")
+log = logging.getLogger("InstitutionalAdvancedExecutor")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -22,14 +22,22 @@ MT5_SERVER = os.getenv("MT5_SERVER", "")
 SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
 MT5_PATH = os.getenv("MT5_PATH", "")
 
+# Crypto API Credentials
 BINANCE_API_KEY = os.getenv("BINANCE_DEMO_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_DEMO_SECRET", "")
 
-CRYPTO_QTY = 0.001  # Minimized micro-quantity safe for a $10 account
+BYBIT_API_KEY = os.getenv("BYBIT_DEMO_API_KEY", "")
+BYBIT_SECRET = os.getenv("BYBIT_DEMO_SECRET", "")
+
+BITGET_API_KEY = os.getenv("BITGET_DEMO_API_KEY", "")
+BITGET_SECRET = os.getenv("BITGET_DEMO_SECRET", "")
+BITGET_PASSWORD = os.getenv("BITGET_DEMO_PASSWORD", "")
+
+CRYPTO_QTY = 0.001  # Minimized micro-quantity safe for $5-$10 small accounts
 MAX_OPEN_POSITIONS = 2
 
-DAILY_PROFIT_TARGET_USD = 1.50   # Scaled appropriately for a $10 starting balance
-DAILY_MAX_LOSS_CAP_USD = -1.00   # Strict max loss safety net for $10
+DAILY_PROFIT_TARGET_USD = 1.00   
+DAILY_MAX_LOSS_CAP_USD = -0.75   
 LOCAL_TZ = pytz.timezone("Asia/Colombo")
 
 def is_execution_window_active() -> tuple[bool, str]:
@@ -61,7 +69,6 @@ def check_daily_pnl_limits() -> tuple[bool, str, float]:
     return True, "OK", daily_net
 
 def calculate_safe_lot_size(account_balance: float, risk_pct: float, entry_price: float, sl_price: float) -> float:
-    """Safely calculates lot size with a strict cap of 0.01-0.02 to protect small $10 accounts."""
     risk_amount_usd = account_balance * (risk_pct / 100.0)
     pips_risk = abs(entry_price - sl_price)
     if pips_risk == 0:
@@ -69,7 +76,7 @@ def calculate_safe_lot_size(account_balance: float, risk_pct: float, entry_price
     calculated_lots = round(risk_amount_usd / (pips_risk * 100000 * 0.1), 2)
     return max(0.01, min(calculated_lots, 0.02))
 
-def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
+def check_latency_watchdog(mt5_active: bool, exchanges_dict: dict) -> bool:
     if mt5_active:
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
@@ -77,23 +84,56 @@ def check_latency_watchdog(mt5_active: bool, binance_exchange) -> bool:
             return False
     return True
 
-def initialize_binance():
-    if not BINANCE_API_KEY or not BINANCE_SECRET:
-        log.warning("Binance API keys missing in .env. Crypto execution skipped.")
-        return None
-    try:
-        exchange = ccxt.binance({
-            'apiKey': BINANCE_API_KEY,
-            'secret': BINANCE_SECRET,
-            'options': {'defaultType': 'future'}
-        })
-        exchange.enable_demo_trading(True)
-        exchange.load_markets()
-        log.info("Connected to Binance Futures successfully.")
-        return exchange
-    except Exception as e:
-        log.error(f"Binance initialization failed: {e}")
-        return None
+def initialize_crypto_exchanges():
+    exchanges = {}
+    
+    # 1. Binance Demo
+    if BINANCE_API_KEY and BINANCE_SECRET:
+        try:
+            ex = ccxt.binance({
+                'apiKey': BINANCE_API_KEY,
+                'secret': BINANCE_SECRET,
+                'options': {'defaultType': 'future'}
+            })
+            ex.enable_demo_trading(True)
+            ex.load_markets()
+            exchanges['BINANCE'] = ex
+            log.info("Connected to Binance Futures Demo successfully.")
+        except Exception as e:
+            log.error(f"Binance initialization failed: {e}")
+
+    # 2. Bybit Demo / Testnet
+    if BYBIT_API_KEY and BYBIT_SECRET:
+        try:
+            ex = ccxt.bybit({
+                'apiKey': BYBIT_API_KEY,
+                'secret': BYBIT_SECRET,
+                'options': {'defaultType': 'linear'}
+            })
+            ex.set_sandbox_mode(True)
+            ex.load_markets()
+            exchanges['BYBIT'] = ex
+            log.info("Connected to Bybit Testnet successfully.")
+        except Exception as e:
+            log.error(f"Bybit initialization failed: {e}")
+
+    # 3. Bitget Demo
+    if BITGET_API_KEY and BITGET_SECRET:
+        try:
+            ex = ccxt.bitget({
+                'apiKey': BITGET_API_KEY,
+                'secret': BITGET_SECRET,
+                'password': BITGET_PASSWORD,
+                'options': {'defaultType': 'swap'}
+            })
+            ex.set_sandbox_mode(True)
+            ex.load_markets()
+            exchanges['BITGET'] = ex
+            log.info("Connected to Bitget Demo successfully.")
+        except Exception as e:
+            log.error(f"Bitget initialization failed: {e}")
+
+    return exchanges
 
 def initialize_mt5() -> bool:
     if datetime.now(LOCAL_TZ).weekday() >= 5:
@@ -119,7 +159,8 @@ def initialize_mt5() -> bool:
     log.info(f"MT5 Connected | Account: {mt5.account_info().login} | Balance: ${mt5.account_info().balance:.2f}")
     return True
 
-def manage_active_mt5_positions():
+def manage_active_mt5_positions_with_trailing_stop():
+    """Advanced MT5 trailing stop & break-even profit lock manager."""
     try:
         positions = mt5.positions_get()
         if not positions:
@@ -141,12 +182,12 @@ def manage_active_mt5_positions():
             if tp > 0:
                 total_distance = abs(tp - entry)
                 current_distance = abs(current_price - entry)
+                sym_info = mt5.symbol_info(symbol)
+                digits = sym_info.digits if sym_info else 5
 
-                if current_distance >= (total_distance * 0.5):
-                    sym_info = mt5.symbol_info(symbol)
-                    digits = sym_info.digits if sym_info else 5
-
-                    if is_buy and sl < entry:
+                # Tier 1: Move SL to Break-Even when 40% to TP is reached
+                if current_distance >= (total_distance * 0.4):
+                    if is_buy and (sl < entry):
                         request = {
                             "action": mt5.TRADE_ACTION_SLTP,
                             "symbol": symbol,
@@ -156,7 +197,7 @@ def manage_active_mt5_positions():
                         }
                         result = mt5.order_send(request)
                         if result.retcode == mt5.TRADE_RETCODE_DONE:
-                            log.info(f"AUTO BREAK-EVEN: MT5 Position #{ticket} ({symbol}) SL moved to entry price {entry}")
+                            log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
                     elif not is_buy and (sl > entry or sl == 0):
                         request = {
                             "action": mt5.TRADE_ACTION_SLTP,
@@ -167,15 +208,50 @@ def manage_active_mt5_positions():
                         }
                         result = mt5.order_send(request)
                         if result.retcode == mt5.TRADE_RETCODE_DONE:
-                            log.info(f"AUTO BREAK-EVEN: MT5 Position #{ticket} ({symbol}) SL moved to entry price {entry}")
-    except Exception as e:
-        log.error(f"Error in manage_active_mt5_positions: {e}")
+                            log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
 
-def execute_crypto_order(exchange, sig: dict):
-    """Executes crypto futures with 1x minimum leverage, isolated margin, and mandatory SL/TP binding."""
+                # Tier 2: Aggressive Trailing Stop when 75% to TP is reached
+                if current_distance >= (total_distance * 0.75):
+                    if is_buy:
+                        new_sl = round(entry + (current_distance * 0.5), digits) # Lock in 50% of gains
+                        if new_sl > sl:
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "symbol": symbol,
+                                "position": ticket,
+                                "sl": new_sl,
+                                "tp": round(tp, digits)
+                            }
+                            result = mt5.order_send(request)
+                            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                                log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
+                    else:
+                        new_sl = round(entry - (current_distance * 0.5), digits)
+                        if new_sl < sl or sl == 0:
+                            request = {
+                                "action": mt5.TRADE_ACTION_SLTP,
+                                "symbol": symbol,
+                                "position": ticket,
+                                "sl": new_sl,
+                                "tp": round(tp, digits)
+                            }
+                            result = mt5.order_send(request)
+                            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                                log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
+    except Exception as e:
+        log.error(f"Error in manage_active_mt5_positions_with_trailing_stop: {e}")
+
+def execute_crypto_order(exchanges_dict, sig: dict):
+    """Executes crypto futures across Binance, Bybit, or Bitget with 1x leverage, isolated margin, and mandatory SL/TP safety binding."""
     allowed, window_msg = is_execution_window_active()
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
+
+    target_exchange = sig.get("exchange", "BINANCE").upper()
+    exchange = exchanges_dict.get(target_exchange)
+    
+    if not exchange:
+        return False, f"EXCHANGE_{target_exchange}_NOT_CONNECTED"
 
     order_id = None
     try:
@@ -188,18 +264,18 @@ def execute_crypto_order(exchange, sig: dict):
         sl = float(sig["sl"])
         tp = float(sig["tp"])
 
-        # Force Minimum Leverage (1x) and Isolated Margin for $10 safety
+        # Force Minimum 1x Leverage & Isolated Margin safely across all exchanges
         try:
             exchange.set_margin_mode('isolated', symbol_ccxt)
         except Exception:
             pass
         try:
-            exchange.set_leverage(1, symbol_ccxt)  # Set to absolute minimum 1x leverage
-            log.info(f"Set Binance leverage to 1x minimum for {symbol_ccxt}")
+            exchange.set_leverage(1, symbol_ccxt)
+            log.info(f"[{target_exchange}] Set leverage to 1x minimum for {symbol_ccxt}")
         except Exception as lev_err:
-            log.warning(f"Could not set 1x leverage explicitly: {lev_err}")
+            log.warning(f"[{target_exchange}] Could not set 1x leverage explicitly: {lev_err}")
 
-        # 1. Main Market Order
+        # 1. Main Market Order Entry
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
@@ -207,7 +283,7 @@ def execute_crypto_order(exchange, sig: dict):
             amount=CRYPTO_QTY
         )
         order_id = order['id']
-        log.info(f"BINANCE MARKET ORDER FILLED (1x Leverage): {order_id} {symbol_ccxt} {side}")
+        log.info(f"[{target_exchange}] MARKET ORDER FILLED (1x Leverage): {order_id} {symbol_ccxt} {side}")
 
         sl_success, tp_success = False, False
 
@@ -221,9 +297,9 @@ def execute_crypto_order(exchange, sig: dict):
                 params={'stopPrice': sl, 'reduceOnly': True}
             )
             sl_success = True
-            log.info(f"Attached Stop Loss for {symbol_ccxt} at {sl}")
+            log.info(f"[{target_exchange}] Attached Stop Loss for {symbol_ccxt} at {sl}")
         except Exception as sl_err:
-            log.error(f"Failed to attach Binance Stop Loss: {sl_err}")
+            log.error(f"[{target_exchange}] Failed to attach Stop Loss: {sl_err}")
 
         # 3. Attach Take Profit
         try:
@@ -235,13 +311,13 @@ def execute_crypto_order(exchange, sig: dict):
                 params={'stopPrice': tp, 'reduceOnly': True}
             )
             tp_success = True
-            log.info(f"Attached Take Profit for {symbol_ccxt} at {tp}")
+            log.info(f"[{target_exchange}] Attached Take Profit for {symbol_ccxt} at {tp}")
         except Exception as tp_err:
-            log.error(f"Failed to attach Binance Take Profit: {tp_err}")
+            log.error(f"[{target_exchange}] Failed to attach Take Profit: {tp_err}")
 
-        # Safety Check: Emergency close if protective orders fail to attach
+        # Safety Check: Emergency close position if protection fails to attach
         if not sl_success or not tp_success:
-            log.error(f"SAFETY ALERT: SL/TP failed to attach for {symbol_ccxt}. Executing emergency market close!")
+            log.error(f"[{target_exchange}] SAFETY ALERT: SL/TP failed to attach for {symbol_ccxt}. Executing emergency market close!")
             exchange.create_order(
                 symbol=symbol_ccxt,
                 type='market',
@@ -253,7 +329,7 @@ def execute_crypto_order(exchange, sig: dict):
 
         return True, order_id
     except Exception as e:
-        log.error(f"Binance order error: {e}")
+        log.error(f"[{target_exchange}] Order error: {e}")
         return False, str(e)
 
 def execute_forex_order(sig: dict):
@@ -319,7 +395,7 @@ def execute_forex_order(sig: dict):
             log.warning("Order aborted: Insufficient free margin in account.")
             return False, "INSUFFICIENT_MARGIN"
     else:
-        balance = 10.0
+        balance = 5.0
 
     dynamic_lot = calculate_safe_lot_size(balance, risk_pct=1.0, entry_price=(tick.ask if is_buy else tick.bid), sl_price=float(sig["sl"]))
 
@@ -369,9 +445,9 @@ def run_dual_executor():
 
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     mt5_active = initialize_mt5()
-    binance_exchange = initialize_binance()
+    exchanges_dict = initialize_crypto_exchanges()
 
-    log.info("Institutional Executor Online with 1x Binance Leverage & $10 Safety Limits. Polling Supabase...")
+    log.info("Advanced Multi-Exchange Institutional Executor Online with Trailing Stops & $5-$10 Safety Limits. Polling Supabase...")
 
     while True:
         try:
@@ -379,12 +455,12 @@ def run_dual_executor():
                 time.sleep(60)
                 continue
 
-            if not check_latency_watchdog(mt5_active, binance_exchange):
+            if not check_latency_watchdog(mt5_active, exchanges_dict):
                 time.sleep(10)
                 continue
 
             if mt5_active:
-                manage_active_mt5_positions()
+                manage_active_mt5_positions_with_trailing_stop()
 
             res = (
                 supabase.table("trade_signals")
@@ -403,10 +479,7 @@ def run_dual_executor():
                     success, outcome = False, ""
 
                     if asset_type == "CRYPTO":
-                        if binance_exchange:
-                            success, outcome = execute_crypto_order(binance_exchange, sig)
-                        else:
-                            outcome = "BINANCE_NOT_CONNECTED"
+                        success, outcome = execute_crypto_order(exchanges_dict, sig)
                     else:
                         if mt5_active:
                             success, outcome = execute_forex_order(sig)
@@ -421,7 +494,7 @@ def run_dual_executor():
 
             time.sleep(3)
         except KeyboardInterrupt:
-            log.info("Stopping institutional executor...")
+            log.info("Stopping advanced institutional executor...")
             if mt5_active:
                 mt5.shutdown()
             break
