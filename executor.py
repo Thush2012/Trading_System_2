@@ -316,7 +316,6 @@ def execute_forex_order(sig: dict):
 
     try:
         created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
-        # Increased window buffer to 300s (5 minutes) to prevent timezone drift issues between VPS and local PC
         if (datetime.now(timezone.utc) - created_at).total_seconds() > 300:
             return False, "STALE_SIGNAL (>300s)"
     except Exception:
@@ -338,6 +337,19 @@ def execute_forex_order(sig: dict):
     sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
 
+    # Dynamically determine supported filling modes for the broker/symbol
+    filling_modes = []
+    if sym_info and hasattr(sym_info, 'filling_mode'):
+        if sym_info.filling_mode & 1:
+            filling_modes.append(mt5.ORDER_FILLING_FOK)
+        if sym_info.filling_mode & 2:
+            filling_modes.append(mt5.ORDER_FILLING_IOC)
+        if sym_info.filling_mode & 4:
+            filling_modes.append(mt5.ORDER_FILLING_RETURN)
+    
+    if not filling_modes:
+        filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+
     positions = mt5.positions_get(symbol=broker_symbol)
     if positions and len(positions) > 0:
         current_pos = positions[0]
@@ -347,20 +359,23 @@ def execute_forex_order(sig: dict):
             return False, "DUPLICATE_DIRECTION_ACTIVE"
         else:
             log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket}.")
-            request_close = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": broker_symbol,
-                "volume": current_pos.volume,
-                "type": mt5.ORDER_TYPE_SELL if pos_is_buy else mt5.ORDER_TYPE_BUY,
-                "position": current_pos.ticket,
-                "price": tick.bid if pos_is_buy else tick.ask,
-                "deviation": 50,
-                "magic": 992026,
-                "comment": "DirectionFlip_Close",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            mt5.order_send(request_close)
+            for mode in filling_modes:
+                request_close = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": broker_symbol,
+                    "volume": current_pos.volume,
+                    "type": mt5.ORDER_TYPE_SELL if pos_is_buy else mt5.ORDER_TYPE_BUY,
+                    "position": current_pos.ticket,
+                    "price": tick.bid if pos_is_buy else tick.ask,
+                    "deviation": 50,
+                    "magic": 992026,
+                    "comment": "DirectionFlip_Close",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mode,
+                }
+                res_close = mt5.order_send(request_close)
+                if res_close and res_close.retcode == mt5.TRADE_RETCODE_DONE:
+                    break
 
     account_info = mt5.account_info()
     balance = account_info.balance if account_info else 5.0
@@ -378,30 +393,36 @@ def execute_forex_order(sig: dict):
         price = current_tick.ask if is_buy else current_tick.bid
         deviation = deviation_steps[attempt]
 
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": broker_symbol,
-            "volume": dynamic_lot,
-            "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
-            "price": round(price, digits),
-            "sl": round(float(sig["sl"]), digits),
-            "tp": round(float(sig["tp"]), digits),
-            "deviation": deviation,
-            "magic": 992026,
-            "comment": f"Institutional_{action}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            log.info(f"MT5 ORDER FILLED (Attempt {attempt+1}): #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
-            return True, str(result.order)
-        else:
-            retcode = result.retcode if result else "UNKNOWN"
-            comment = result.comment if result else "No response"
-            log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment}). Retrying...")
-            time.sleep(1)
+        # Automatically loop through supported filling modes to prevent 10030 errors
+        for filling in filling_modes:
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": broker_symbol,
+                "volume": dynamic_lot,
+                "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+                "price": round(price, digits),
+                "sl": round(float(sig["sl"]), digits),
+                "tp": round(float(sig["tp"]), digits),
+                "deviation": deviation,
+                "magic": 992026,
+                "comment": f"Institutional_{action}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+            
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                log.info(f"MT5 ORDER FILLED (Attempt {attempt+1}): #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
+                return True, str(result.order)
+            elif result and result.retcode == 10030:
+                continue
+            else:
+                retcode = result.retcode if result else "UNKNOWN"
+                comment = result.comment if result else "No response"
+                log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment})")
+                break
+
+        time.sleep(1)
 
     log.error(f"MT5 order permanently failed on {broker_symbol} after {max_retries} attempts.")
     return False, "MAX_RETRIES_EXCEEDED"
@@ -454,7 +475,6 @@ def run_dual_executor():
                         else:
                             outcome = "MT5_NOT_CONNECTED"
 
-                    # Fixed payload structure to avoid dynamic key errors and correctly record outcomes/errors
                     payload = {
                         "status": "EXECUTED" if success else "FAILED",
                         "error_message": outcome if not success else None,
