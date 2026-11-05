@@ -254,6 +254,7 @@ def execute_crypto_order(exchanges_dict, sig: dict):
         except Exception:
             pass
 
+        # 1. Main Market Order Entry
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
@@ -265,39 +266,62 @@ def execute_crypto_order(exchanges_dict, sig: dict):
 
         sl_success, tp_success = False, False
 
+        # Properly structured parameters for Binance and Bitget conditional SL/TP orders
+        stop_params = {
+            'stopPrice': sl,
+            'triggerPrice': sl,
+            'reduceOnly': True,
+            'workingType': 'MARK_PRICE'
+        }
+
+        tp_params = {
+            'stopPrice': tp,
+            'triggerPrice': tp,
+            'reduceOnly': True,
+            'workingType': 'MARK_PRICE'
+        }
+
+        # 2. Attach Stop Loss
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
                 type='stop_market',
                 side=close_side,
                 amount=CRYPTO_QTY,
-                params={'stopPrice': sl, 'reduceOnly': True}
+                params=stop_params
             )
             sl_success = True
+            log.info(f"[{target_exchange}] Attached Stop Loss for {symbol_ccxt} at {sl}")
         except Exception as sl_err:
             log.error(f"[{target_exchange}] Failed to attach Stop Loss: {sl_err}")
 
+        # 3. Attach Take Profit
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
                 type='take_profit_market',
                 side=close_side,
                 amount=CRYPTO_QTY,
-                params={'stopPrice': tp, 'reduceOnly': True}
+                params=tp_params
             )
             tp_success = True
+            log.info(f"[{target_exchange}] Attached Take Profit for {symbol_ccxt} at {tp}")
         except Exception as tp_err:
             log.error(f"[{target_exchange}] Failed to attach Take Profit: {tp_err}")
 
+        # Safety Check: Emergency close position if protection fails to attach
         if not sl_success or not tp_success:
             log.error(f"[{target_exchange}] SAFETY ALERT: SL/TP missing. Emergency closing position!")
-            exchange.create_order(
-                symbol=symbol_ccxt,
-                type='market',
-                side=close_side,
-                amount=CRYPTO_QTY,
-                params={'reduceOnly': True}
-            )
+            try:
+                exchange.create_order(
+                    symbol=symbol_ccxt,
+                    type='market',
+                    side=close_side,
+                    amount=CRYPTO_QTY,
+                    params={'reduceOnly': True}
+                )
+            except Exception as close_err:
+                log.error(f"[{target_exchange}] Emergency close failed: {close_err}")
             return False, "EMERGENCY_CLOSED_MISSING_SL_TP"
 
         return True, order_id
@@ -337,7 +361,6 @@ def execute_forex_order(sig: dict):
     sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
 
-    # Dynamically determine supported filling modes for the broker/symbol
     filling_modes = []
     if sym_info and hasattr(sym_info, 'filling_mode'):
         if sym_info.filling_mode & 1:
@@ -393,7 +416,6 @@ def execute_forex_order(sig: dict):
         price = current_tick.ask if is_buy else current_tick.bid
         deviation = deviation_steps[attempt]
 
-        # Automatically loop through supported filling modes to prevent 10030 errors
         for filling in filling_modes:
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
