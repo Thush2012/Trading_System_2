@@ -100,7 +100,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
 
     # 2. Volatility / Regime Check
     adx = float(sig.get("adx", 26.0))
-    if adx >= 20.0:  # Relaxed slightly to prevent over-filtering valid trades
+    if adx >= 20.0:  
         score += 1
         details['volatility_regime'] = 'CLEAN_TREND'
     else:
@@ -512,7 +512,6 @@ def run_dual_executor():
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    # Soft evaluation check alignment (passing score >= 2 to match cloud pushes)
                     score, confluence_details = evaluate_institutional_confluence(sig)
                     
                     if score >= 2:
