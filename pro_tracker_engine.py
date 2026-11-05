@@ -31,11 +31,11 @@ class ProTraderTracker:
 
     def get_pro_consensus(self, symbol: str) -> dict:
         strategies = self.fetch_pro_strategies()
-        score = len(strategies) if strategies else 2
+        score = len(strategies) if strategies else 4
         return {
             "symbol": symbol,
             "consensus": "BULLISH" if score > 0 else "NEUTRAL",
-            "score": float(score * 45.0),
+            "score": float(score * 25.0),
             "institutional_alignment": True,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -44,38 +44,58 @@ class ProTraderTracker:
         strategies = self.fetch_pro_strategies()
         score = 0
         feedback = []
+
+        # Fallback multi-persona institutional strategies if table is empty
         if not strategies:
             strategies = [
                 {"category": "Quantitative", "trader_name": "Jim Simons / Ed Thorp", "core_principle": "Statistical Arbitrage"},
-                {"category": "Systematic Discipline", "trader_name": "Andrea Unger", "core_principle": "Volatility Filters"}
+                {"category": "Systematic Discipline", "trader_name": "Andrea Unger", "core_principle": "Volatility Filters"},
+                {"category": "Global Macro", "trader_name": "Stanley Druckenmiller", "core_principle": "Macro Trend Alignment"},
+                {"category": "Volume Footprint", "trader_name": "ICT / Smart Money", "core_principle": "Order Flow & Liquidity Absorption"}
             ]
+
         for strat in strategies:
             category = strat.get("category", "")
             trader = strat.get("trader_name", "Elite Practitioner")
             
             if category == 'Quantitative':
                 z_score = indicators.get('z_score', 0.0)
-                if abs(z_score) > 1.2:
+                if abs(z_score) > 1.0:
                     score += 1
                     feedback.append(f"Matched {trader} Statistical Arbitrage threshold (Z-Score: {z_score:.2f}).")
             elif category == 'Systematic Discipline':
                 adx = indicators.get('adx', 0.0)
-                if adx >= 15.0:
+                if adx >= 20.0:
                     score += 1
-                    feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 15).")
+                    feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 20).")
             elif category == 'Global Macro':
                 trend_alignment = indicators.get('macro_trend_aligned', True)
                 if trend_alignment:
                     score += 1
                     feedback.append(f"Aligned with {trader} macro momentum structure.")
-        logger.info(f"[{symbol}] Pro-Trader Confluence Score: {score}/{len(strategies)}")
-        return score, feedback
+            elif category == 'Volume Footprint':
+                volume_surge = indicators.get('volume_surge', True)
+                if volume_surge:
+                    score += 1
+                    feedback.append(f"Confirmed by {trader} order flow volume surge.")
+
+        logger.info(f"[{symbol}] Multi-Persona Pro-Trader Confluence Score: {score}/{len(strategies)}")
+        return score, " | ".join(feedback) if feedback else "Standard Institutional Baseline"
 
     def fetch_and_store_historical_candles(self, symbol="BTC/USDT", timeframe="1d", limit=365):
-        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)[cite: 3, 4]."""
+        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)[cite: 4]."""
         logger.info(f"Fetching historical candles for {symbol} ({timeframe})...")
         try:
-            yf_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else f"{symbol.replace('/', '')}=X")
+            if "BTC" in symbol:
+                yf_sym = "BTC-USD"
+            elif "ETH" in symbol:
+                yf_sym = "ETH-USD"
+            elif "/" in symbol:
+                base, quote = symbol.split("/")
+                yf_sym = f"{base}{quote}=X"
+            else:
+                yf_sym = f"{symbol}=X"
+
             df = yf.download(yf_sym, period="1y", interval="1d", progress=False)
             if df is None or df.empty:
                 logger.warning(f"No historical candles retrieved for {symbol} via yfinance.")
@@ -119,6 +139,7 @@ class ProTraderTracker:
                 self.supabase.table("pro_trader_history").insert(payload).execute()
             
             self.fetch_and_store_historical_candles(symbol="BTC/USDT", timeframe="1d", limit=365)
+            self.fetch_and_store_historical_candles(symbol="EUR/USD", timeframe="1d", limit=365)
             logger.info("Pro-trader history and historical candles successfully recorded to Supabase.")
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
