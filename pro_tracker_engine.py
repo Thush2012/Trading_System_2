@@ -41,61 +41,73 @@ class ProTraderTracker:
         }
 
     def evaluate_market_against_pro_rules(self, symbol: str, current_price: float, indicators: dict) -> tuple:
+        """
+        Evaluates current market metrics across multiple institutional professional personas
+        (ICT Smart Money, Wyckoff Accumulation, Volume Footprint, and Trend Momentum).
+        """
         strategies = self.fetch_pro_strategies()
         score = 0
         feedback = []
 
-        # Fallback multi-persona institutional strategies if table is empty
+        # Default personas if database table is unpopulated
         if not strategies:
             strategies = [
-                {"category": "Quantitative", "trader_name": "Jim Simons / Ed Thorp", "core_principle": "Statistical Arbitrage"},
-                {"category": "Systematic Discipline", "trader_name": "Andrea Unger", "core_principle": "Volatility Filters"},
-                {"category": "Global Macro", "trader_name": "Stanley Druckenmiller", "core_principle": "Macro Trend Alignment"},
-                {"category": "Volume Footprint", "trader_name": "ICT / Smart Money", "core_principle": "Order Flow & Liquidity Absorption"}
+                {"category": "ICT_Smart_Money", "trader_name": "ICT / Inner Circle Trader", "core_principle": "Liquidity & Order Blocks"},
+                {"category": "Wyckoff_Institutional", "trader_name": "Richard Wyckoff", "core_principle": "Accumulation / Distribution"},
+                {"category": "Volume_Footprint_Trader", "trader_name": "Volume Footprint Analyst", "core_principle": "Institutional Absorption"},
+                {"category": "Trend_Momentum_Turtle", "trader_name": "Turtle Trading System", "core_principle": "Volatility & ADX Trend"}
             ]
+
+        adx = float(indicators.get('adx', 0.0))
+        z_score = float(indicators.get('z_score', 0.0))
+        macro_aligned = bool(indicators.get('macro_trend_aligned', True))
+        volume_surge = bool(indicators.get('volume_surge', True))
 
         for strat in strategies:
             category = strat.get("category", "")
             trader = strat.get("trader_name", "Elite Practitioner")
-            
-            if category == 'Quantitative':
-                z_score = indicators.get('z_score', 0.0)
-                if abs(z_score) > 1.0:
+
+            if category == 'ICT_Smart_Money':
+                # ICT check: Requires trend macro alignment and sufficient volatility
+                if macro_aligned and adx >= 22.0:
                     score += 1
-                    feedback.append(f"Matched {trader} Statistical Arbitrage threshold (Z-Score: {z_score:.2f}).")
-            elif category == 'Systematic Discipline':
-                adx = indicators.get('adx', 0.0)
-                if adx >= 20.0:
+                    feedback.append(f"Matched {trader} model (Macro aligned & trend active).")
+                else:
+                    feedback.append(f"Failed {trader} model criteria.")
+
+            elif category == 'Wyckoff_Institutional':
+                # Wyckoff check: Statistical deviation or value zone identification
+                if abs(z_score) >= 1.0 and adx >= 18.0:
                     score += 1
-                    feedback.append(f"Passed {trader} volatility constraint (ADX: {adx:.1f} >= 20).")
-            elif category == 'Global Macro':
-                trend_alignment = indicators.get('macro_trend_aligned', True)
-                if trend_alignment:
-                    score += 1
-                    feedback.append(f"Aligned with {trader} macro momentum structure.")
-            elif category == 'Volume Footprint':
-                volume_surge = indicators.get('volume_surge', True)
+                    feedback.append(f"Matched {trader} setup (Z-Score deviation: {z_score:.2f}).")
+                else:
+                    feedback.append(f"Failed {trader} setup criteria.")
+
+            elif category == 'Volume_Footprint_Trader':
+                # Volume / Order flow check
                 if volume_surge:
                     score += 1
-                    feedback.append(f"Confirmed by {trader} order flow volume surge.")
+                    feedback.append(f"Confirmed {trader} volume absorption / order flow surge.")
+                else:
+                    feedback.append(f"Failed {trader} volume criteria.")
 
+            elif category == 'Trend_Momentum_Turtle':
+                # Momentum check via ADX
+                if adx >= 25.0:
+                    score += 1
+                    feedback.append(f"Passed {trader} constraint (ADX: {adx:.1f} >= 25).")
+                else:
+                    feedback.append(f"Failed {trader} momentum criteria.")
+
+        summary_feedback = " | ".join(feedback)
         logger.info(f"[{symbol}] Multi-Persona Pro-Trader Confluence Score: {score}/{len(strategies)}")
-        return score, " | ".join(feedback) if feedback else "Standard Institutional Baseline"
+        return score, summary_feedback
 
     def fetch_and_store_historical_candles(self, symbol="BTC/USDT", timeframe="1d", limit=365):
-        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)[cite: 4]."""
+        """Fetches historical market charts using yfinance to bypass VPS geo-blocking (HTTP 451)."""
         logger.info(f"Fetching historical candles for {symbol} ({timeframe})...")
         try:
-            if "BTC" in symbol:
-                yf_sym = "BTC-USD"
-            elif "ETH" in symbol:
-                yf_sym = "ETH-USD"
-            elif "/" in symbol:
-                base, quote = symbol.split("/")
-                yf_sym = f"{base}{quote}=X"
-            else:
-                yf_sym = f"{symbol}=X"
-
+            yf_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else f"{symbol.replace('/', '')}=X")
             df = yf.download(yf_sym, period="1y", interval="1d", progress=False)
             if df is None or df.empty:
                 logger.warning(f"No historical candles retrieved for {symbol} via yfinance.")
@@ -125,8 +137,8 @@ class ProTraderTracker:
             strategies = self.fetch_pro_strategies()
             if not strategies:
                 strategies = [
-                    {"trader_name": "Jim Simons / Ed Thorp", "symbol": "BTCUSDT", "action": "BUY", "entry_price": 0.0},
-                    {"trader_name": "Andrea Unger", "symbol": "EURUSD", "action": "SELL", "entry_price": 1.0850}
+                    {"trader_name": "ICT / Inner Circle Trader", "symbol": "BTCUSDT", "action": "BUY", "entry_price": 0.0},
+                    {"trader_name": "Turtle Trading System", "symbol": "EURUSD", "action": "SELL", "entry_price": 1.0850}
                 ]
             for strat in strategies:
                 payload = {
@@ -139,7 +151,6 @@ class ProTraderTracker:
                 self.supabase.table("pro_trader_history").insert(payload).execute()
             
             self.fetch_and_store_historical_candles(symbol="BTC/USDT", timeframe="1d", limit=365)
-            self.fetch_and_store_historical_candles(symbol="EUR/USD", timeframe="1d", limit=365)
             logger.info("Pro-trader history and historical candles successfully recorded to Supabase.")
         except Exception as e:
             logger.error(f"Error during daily pro-trader analysis execution: {e}")
