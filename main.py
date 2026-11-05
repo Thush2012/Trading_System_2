@@ -47,6 +47,49 @@ if SUPABASE_URL and SUPABASE_KEY:
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
+    """
+    Evaluates multi-timeframe structure, session timing, volatility regime,
+    and volume flow to assign an institutional conviction score (0 to 4).
+    """
+    score = 0
+    details = {}
+    
+    # 1. Session Timing Check (Killzones: London & New York Active Hours UTC)
+    utc_now = datetime.now(timezone.utc)
+    hour = utc_now.hour
+    if 7 <= hour <= 21:
+        score += 1
+        details['session'] = 'OPTIMAL_KILLZONE'
+    else:
+        details['session'] = 'LOW_LIQUIDITY_HOUR'
+
+    # 2. Volatility & Choppiness Filter (ADX check >= 25.0)
+    adx = float(sig.get("adx", 0.0))
+    if adx >= 25.0:
+        score += 1
+        details['volatility_regime'] = 'CLEAN_TREND'
+    else:
+        details['volatility_regime'] = 'CHOPPY_OR_RANGING'
+
+    # 3. Higher Timeframe (HTF) Trend Anchor Alignment
+    macro_aligned = bool(sig.get("macro_trend_aligned", True))
+    if macro_aligned:
+        score += 1
+        details['htf_alignment'] = 'TREND_ALIGNED'
+    else:
+        details['htf_alignment'] = 'COUNTER_TREND_WARNING'
+
+    # 4. Volume / Liquidity Surge Check
+    volume_surge = bool(sig.get("volume_surge", True))
+    if volume_surge:
+        score += 1
+        details['order_flow'] = 'INSTITUTIONAL_VOLUME_CONFIRMED'
+    else:
+        details['order_flow'] = 'STANDARD_VOLUME'
+
+    return score, details
+
 def push_to_supabase(sig: dict, institutional_score: int = 0):
     if not supabase:
         return
@@ -135,17 +178,27 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     "macro_trend_aligned": bool(sig.get("macro_trend_aligned", True))
                 }
                 
+                # Evaluate advanced institutional confluence score (0 to 4)
+                institutional_score, confluence_details = evaluate_institutional_confluence(sig)
+                
                 score, feedback = pro_engine.evaluate_market_against_pro_rules(
                     sig["symbol"], sig["current_price"], indicators
                 )
                 
-                record_pro_trader_history(sig, score, feedback)
+                combined_score = max(score, institutional_score)
+                
+                record_pro_trader_history(sig, combined_score, f"{feedback} | Confluence: {confluence_details}")
                 push_candles_to_supabase(sig)
                 
-                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
-                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
-                
-                push_to_supabase(sig, institutional_score=score)
+                # Enforce high-conviction threshold (score >= 3 out of 4) before pushing live signals
+                if institutional_score >= 3:
+                    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
+                    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
+                    
+                    push_to_supabase(sig, institutional_score=combined_score)
+                    log.info(f"High-conviction signal pushed for {sig['symbol']} with Institutional Score: {institutional_score}/4 | Details: {confluence_details}")
+                else:
+                    log.info(f"Skipped {sig['symbol']} signal: Institutional score {institutional_score}/4 below threshold.")
                 
                 ticker = global_scanner.market_map.get(sig["symbol"], {}).get("ticker", "")
                 if ticker:

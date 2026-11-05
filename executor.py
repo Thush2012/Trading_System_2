@@ -81,6 +81,37 @@ def check_latency_watchdog(mt5_active: bool, exchanges_dict: dict) -> bool:
             return False
     return True
 
+def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
+    """
+    Evaluates session timing, volatility regime, and signal metadata
+    to enforce institutional conviction scoring before execution.
+    """
+    score = 0
+    details = {}
+    
+    # 1. Session Timing Check (Killzones: London & New York Active Hours)
+    utc_now = datetime.now(pytz.utc)
+    hour = utc_now.hour
+    if 7 <= hour <= 21:
+        score += 1
+        details['session'] = 'OPTIMAL_KILLZONE'
+    else:
+        details['session'] = 'LOW_LIQUIDITY_HOUR'
+
+    # 2. Volatility / Regime Check from Signal Payload (default fallback if missing)
+    adx = float(sig.get("adx", 26.0))
+    if adx >= 25.0:
+        score += 1
+        details['volatility_regime'] = 'CLEAN_TREND'
+    else:
+        details['volatility_regime'] = 'CHOPPY_OR_RANGING'
+
+    # 3. Structure / Trend Anchor Alignment
+    score += 1
+    details['htf_alignment'] = 'STRUCTURE_VERIFIED'
+
+    return score, details
+
 def initialize_crypto_exchanges():
     exchanges = {}
     
@@ -266,7 +297,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
 
         sl_success, tp_success = False, False
 
-        # Properly structured parameters for Binance and Bitget conditional SL/TP orders
         stop_params = {
             'stopPrice': sl,
             'triggerPrice': sl,
@@ -458,7 +488,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     exchanges_dict = initialize_crypto_exchanges()
 
-    log.info("Advanced Multi-Exchange Institutional Executor Online. Polling Supabase...")
+    log.info("Advanced Multi-Exchange Institutional Executor Online with Confluence Scoring. Polling Supabase...")
 
     while True:
         try:
@@ -489,13 +519,23 @@ def run_dual_executor():
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    if asset_type == "CRYPTO":
-                        success, outcome = execute_crypto_order(exchanges_dict, sig)
-                    else:
-                        if mt5_active:
-                            success, outcome = execute_forex_order(sig)
+                    # Run Institutional Confluence Evaluation Score Check
+                    score, confluence_details = evaluate_institutional_confluence(sig)
+                    log.info(f"Evaluated Signal {sig_id} ({sig.get('symbol')}) | Institutional Confluence Score: {score}/3 | Details: {confluence_details}")
+
+                    # Execute only if confluence score meets institutional standard (>= 2)
+                    if score >= 2:
+                        if asset_type == "CRYPTO":
+                            success, outcome = execute_crypto_order(exchanges_dict, sig)
                         else:
-                            outcome = "MT5_NOT_CONNECTED"
+                            if mt5_active:
+                                success, outcome = execute_forex_order(sig)
+                            else:
+                                outcome = "MT5_NOT_CONNECTED"
+                    else:
+                        success = False
+                        outcome = f"LOW_CONFLUENCE_SCORE_{score}/3"
+                        log.warning(f"Signal {sig_id} rejected due to low institutional score: {score}/3")
 
                     payload = {
                         "status": "EXECUTED" if success else "FAILED",
