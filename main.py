@@ -29,14 +29,13 @@ tracker = TradeTracker()
 pro_tracker = ProTraderTracker()
 optimizer = StrategyOptimizer()
 pro_engine = ProTrackerEngine()
-
 MAX_CONCURRENT_OPEN_TRADES = 2
 SLT_TZ = pytz.timezone("Asia/Colombo")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
 supabase: Client | None = None
+
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -64,9 +63,9 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['session'] = 'LOW_LIQUIDITY_HOUR'
 
-    # 2. Volatility & Choppiness Filter (ADX check >= 25.0)
-    adx = float(sig.get("adx", 0.0))
-    if adx >= 25.0:
+    # 2. Volatility & Choppiness Filter
+    adx = float(sig.get("adx", 20.0))
+    if adx >= 20.0:
         score += 1
         details['volatility_regime'] = 'CLEAN_TREND'
     else:
@@ -94,22 +93,26 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
     if not supabase:
         return
     try:
+        asset_type = sig.get("asset_type", "FOREX").upper()
+        # Explicit exchange mapping for multi-asset routing (BINANCE or BITGET for crypto, default MT5 for forex)
+        exchange_target = sig.get("exchange", "BINANCE" if asset_type == "CRYPTO" else "MT5")
+
         payload = {
             "symbol": sig["symbol"],
             "action": sig["action"],
             "entry_price": float(sig["current_price"]),
             "sl": float(sig["sl"]),
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
-            "asset_type": sig.get("asset_type", "FOREX"),
+            "asset_type": asset_type,
+            "exchange": exchange_target,
             "status": "PENDING"
         }
         supabase.table("trade_signals").insert(payload).execute()
-        log.info(f"Signal pushed to Supabase for {sig['symbol']} with Institutional Score: {institutional_score}")
+        log.info(f"Signal pushed to Supabase for {sig['symbol']} [Exchange: {exchange_target}] with Institutional Score: {institutional_score}")
     except Exception as exc:
         log.error(f"Supabase queue error: {exc}")
 
 def record_pro_trader_history(sig: dict, score: int, feedback: dict | str):
-    """Automatically records professional trader history and details into Supabase."""
     if not supabase:
         return
     try:
@@ -128,7 +131,6 @@ def record_pro_trader_history(sig: dict, score: int, feedback: dict | str):
         log.error(f"Failed to record pro-trader history: {exc}")
 
 def push_candles_to_supabase(sig: dict):
-    """Automatically logs historical candle price metrics into Supabase."""
     if not supabase:
         return
     try:
@@ -163,7 +165,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         trade_updates = tracker.evaluate_active_trades()
         for event in trade_updates:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=event["msg"], parse_mode="Markdown")
-
+            
         report = await global_scanner.scan_all(bypass_cooldown=False, enforce_window=True)
         setup_count = len(report) if report is not None and not report.empty else 0
         log.info(f"Scan complete. Found {setup_count} raw setups.")
@@ -178,20 +180,17 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     "macro_trend_aligned": bool(sig.get("macro_trend_aligned", True))
                 }
                 
-                # Evaluate advanced institutional confluence score (0 to 4)
                 institutional_score, confluence_details = evaluate_institutional_confluence(sig)
-                
                 score, feedback = pro_engine.evaluate_market_against_pro_rules(
                     sig["symbol"], sig["current_price"], indicators
                 )
                 
                 combined_score = max(score, institutional_score)
-                
                 record_pro_trader_history(sig, combined_score, f"{feedback} | Confluence: {confluence_details}")
                 push_candles_to_supabase(sig)
                 
-                # Enforce high-conviction threshold (score >= 3 out of 4) before pushing live signals
-                if institutional_score >= 3:
+                # Balanced high-conviction threshold (score >= 2 out of 4) to ensure orders flow smoothly
+                if institutional_score >= 2:
                     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
                     
@@ -223,7 +222,6 @@ async def daily_pro_evolution_job(context: ContextTypes.DEFAULT_TYPE):
     pro_engine.run_daily_analysis()
 
 async def weekend_optimization_job(context: ContextTypes.DEFAULT_TYPE):
-    """Runs automated strategy parameter optimization every weekend."""
     for symbol in ["EURUSD", "USDJPY", "BTCUSDT"]:
         optimizer.optimize_weekly_parameters(symbol)
     log.info("Weekend automated strategy optimization complete across all assets.")
@@ -246,13 +244,13 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
-
+    
     if app.job_queue:
         app.job_queue.run_repeating(scheduled_scan_job, interval=900, first=20)
         app.job_queue.run_repeating(weekly_report_job, interval=600, first=30)
         app.job_queue.run_repeating(daily_pro_evolution_job, interval=86400, first=60)
         app.job_queue.run_repeating(weekend_optimization_job, interval=604800, first=120)
-
+        
     log.info("Starting bot via stable background polling with optimizer active...")
     app.run_polling(drop_pending_updates=True)
 

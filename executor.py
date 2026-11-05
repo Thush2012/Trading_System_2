@@ -90,7 +90,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     details = {}
     
     # 1. Session Timing Check (Killzones: London & New York Active Hours)
-    utc_now = datetime.now(pytz.utc)
+    utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
     if 7 <= hour <= 21:
         score += 1
@@ -98,9 +98,9 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['session'] = 'LOW_LIQUIDITY_HOUR'
 
-    # 2. Volatility / Regime Check from Signal Payload (default fallback if missing)
+    # 2. Volatility / Regime Check
     adx = float(sig.get("adx", 26.0))
-    if adx >= 25.0:
+    if adx >= 20.0:  # Relaxed slightly to prevent over-filtering valid trades
         score += 1
         details['volatility_regime'] = 'CLEAN_TREND'
     else:
@@ -115,7 +115,6 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
 def initialize_crypto_exchanges():
     exchanges = {}
     
-    # 1. Binance Demo
     if BINANCE_API_KEY and BINANCE_SECRET:
         try:
             ex = ccxt.binance({
@@ -130,7 +129,6 @@ def initialize_crypto_exchanges():
         except Exception as e:
             log.error(f"Binance initialization failed: {e}")
 
-    # 2. Bitget Demo
     if BITGET_API_KEY and BITGET_SECRET:
         try:
             ex = ccxt.bitget({
@@ -209,7 +207,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                             "tp": round(tp, digits)
                         }
                         result = mt5.order_send(request)
-                        if result.retcode == mt5.TRADE_RETCODE_DONE:
+                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                             log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
                     elif not is_buy and (sl > entry or sl == 0):
                         request = {
@@ -220,7 +218,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                             "tp": round(tp, digits)
                         }
                         result = mt5.order_send(request)
-                        if result.retcode == mt5.TRADE_RETCODE_DONE:
+                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                             log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
 
                 # Tier 2: Aggressive Trailing Stop when 75% to TP is reached
@@ -236,7 +234,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                                 "tp": round(tp, digits)
                             }
                             result = mt5.order_send(request)
-                            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                                 log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
                     else:
                         new_sl = round(entry - (current_distance * 0.5), digits)
@@ -249,7 +247,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                                 "tp": round(tp, digits)
                             }
                             result = mt5.order_send(request)
-                            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                                 log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
     except Exception as e:
         log.error(f"Error in manage_active_mt5_positions_with_trailing_stop: {e}")
@@ -285,7 +283,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
         except Exception:
             pass
 
-        # 1. Main Market Order Entry
         order = exchange.create_order(
             symbol=symbol_ccxt,
             type='market',
@@ -303,7 +300,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
             'reduceOnly': True,
             'workingType': 'MARK_PRICE'
         }
-
         tp_params = {
             'stopPrice': tp,
             'triggerPrice': tp,
@@ -311,7 +307,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
             'workingType': 'MARK_PRICE'
         }
 
-        # 2. Attach Stop Loss
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
@@ -325,7 +320,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
         except Exception as sl_err:
             log.error(f"[{target_exchange}] Failed to attach Stop Loss: {sl_err}")
 
-        # 3. Attach Take Profit
         try:
             exchange.create_order(
                 symbol=symbol_ccxt,
@@ -339,7 +333,6 @@ def execute_crypto_order(exchanges_dict, sig: dict):
         except Exception as tp_err:
             log.error(f"[{target_exchange}] Failed to attach Take Profit: {tp_err}")
 
-        # Safety Check: Emergency close position if protection fails to attach
         if not sl_success or not tp_success:
             log.error(f"[{target_exchange}] SAFETY ALERT: SL/TP missing. Emergency closing position!")
             try:
@@ -488,7 +481,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     exchanges_dict = initialize_crypto_exchanges()
 
-    log.info("Advanced Multi-Exchange Institutional Executor Online with Confluence Scoring. Polling Supabase...")
+    log.info("Advanced Multi-Exchange Institutional Executor Online. Polling Supabase...")
 
     while True:
         try:
@@ -519,11 +512,9 @@ def run_dual_executor():
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    # Run Institutional Confluence Evaluation Score Check
+                    # Soft evaluation check alignment (passing score >= 2 to match cloud pushes)
                     score, confluence_details = evaluate_institutional_confluence(sig)
-                    log.info(f"Evaluated Signal {sig_id} ({sig.get('symbol')}) | Institutional Confluence Score: {score}/3 | Details: {confluence_details}")
-
-                    # Execute only if confluence score meets institutional standard (>= 2)
+                    
                     if score >= 2:
                         if asset_type == "CRYPTO":
                             success, outcome = execute_crypto_order(exchanges_dict, sig)
@@ -535,7 +526,7 @@ def run_dual_executor():
                     else:
                         success = False
                         outcome = f"LOW_CONFLUENCE_SCORE_{score}/3"
-                        log.warning(f"Signal {sig_id} rejected due to low institutional score: {score}/3")
+                        log.warning(f"Signal {sig_id} rejected locally due to low score: {score}/3")
 
                     payload = {
                         "status": "EXECUTED" if success else "FAILED",
