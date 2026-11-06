@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import subprocess
 import logging
@@ -6,7 +7,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (Supervisor) %(message)s")
 log = logging.getLogger("Supervisor")
 
-# Pointing directly to your active executor file name
 EXECUTOR_SCRIPT = "executor.py"
 
 def run_supervisor():
@@ -15,14 +15,14 @@ def run_supervisor():
     while True:
         if not os.path.exists(EXECUTOR_SCRIPT):
             log.error(f"Target script '{EXECUTOR_SCRIPT}' not found in directory: {os.getcwd()}")
-            log.error("Please verify your file location or update the EXECUTOR_SCRIPT variable.")
             time.sleep(10)
             continue
 
-        log.info(f"Launching Institutional Executor ({EXECUTOR_SCRIPT})...")
+        log.info(f"Launching Institutional Executor ({EXECUTOR_SCRIPT}) using active environment...")
         
         try:
-            process = subprocess.Popen(["python", EXECUTOR_SCRIPT])
+            # Use sys.executable to ensure it runs inside the active virtual environment (.venv)
+            process = subprocess.Popen([sys.executable, EXECUTOR_SCRIPT])
             process.wait()
             
             if process.returncode != 0:
