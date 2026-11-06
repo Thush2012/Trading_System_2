@@ -6,14 +6,13 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (Supervisor) %(message)s")
 log = logging.getLogger("Supervisor")
 
-# Define the target executor script name (matches your repository structure)
-EXECUTOR_SCRIPT = "03.executor.py"
+# Pointing directly to your active executor file name
+EXECUTOR_SCRIPT = "executor.py"
 
 def run_supervisor():
     log.info("Institutional Trading Supervisor initialized.")
     
     while True:
-        # Check if the executor script exists in the current working directory
         if not os.path.exists(EXECUTOR_SCRIPT):
             log.error(f"Target script '{EXECUTOR_SCRIPT}' not found in directory: {os.getcwd()}")
             log.error("Please verify your file location or update the EXECUTOR_SCRIPT variable.")
@@ -23,10 +22,7 @@ def run_supervisor():
         log.info(f"Launching Institutional Executor ({EXECUTOR_SCRIPT})...")
         
         try:
-            # Spawn the executor process using the active python interpreter
             process = subprocess.Popen(["python", EXECUTOR_SCRIPT])
-            
-            # Wait for the process to complete or crash
             process.wait()
             
             if process.returncode != 0:
