@@ -254,7 +254,6 @@ def execute_forex_order(sig: dict):
         return False, pnl_reason
 
     symbol_raw = sig["symbol"]
-    # Check symbol with suffix first, then fallback to raw symbol if not found
     broker_symbols = [f"{symbol_raw}{SYMBOL_SUFFIX}", symbol_raw]
     broker_symbol = None
 
@@ -327,7 +326,7 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     exchanges_dict = initialize_crypto_exchanges()
 
-    log.info("Advanced Multi-Exchange Institutional Executor Online. Polling Supabase...")
+    log.info("Advanced Multi-Exchange Institutional Executor Online with Atomic Locking...")
 
     while True:
         try:
@@ -342,6 +341,7 @@ def run_dual_executor():
             if mt5_active:
                 manage_active_mt5_positions_with_trailing_stop()
 
+            # Atomic claim query: Fetch oldest PENDING signal
             res = (
                 supabase.table("trade_signals")
                 .select("*")
@@ -356,6 +356,17 @@ def run_dual_executor():
                 for sig in signals:
                     sig_id = sig["id"]
                     
+                    # Atomic status transition from PENDING -> LOCKED to prevent race conditions
+                    lock_res = (
+                        supabase.table("trade_signals")
+                        .update({"status": "LOCKED"})
+                        .eq("id", sig_id)
+                        .eq("status", "PENDING")
+                        .execute()
+                    )
+                    if not lock_res.data:
+                        continue # Already claimed by another worker or loop
+
                     # STALE SIGNAL CHECK: Auto-expire signals older than 10 minutes
                     try:
                         created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
@@ -369,8 +380,7 @@ def run_dual_executor():
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    # Accept signals pre-vetted by VPS scanner directly
-                    log.info(f"Processing Pending Signal #{sig_id} | Asset: {asset_type} | Symbol: {sig.get('symbol')} | Action: {sig.get('action')}")
+                    log.info(f"Processing Locked Signal #{sig_id} | Asset: {asset_type} | Symbol: {sig.get('symbol')} | Action: {sig.get('action')}")
 
                     if asset_type == "CRYPTO":
                         success, outcome = execute_crypto_order(exchanges_dict, sig)
@@ -378,7 +388,6 @@ def run_dual_executor():
                         if mt5_active:
                             success, outcome = execute_forex_order(sig)
                         else:
-                        
                             outcome = "MT5_NOT_CONNECTED"
 
                     payload = {
@@ -388,13 +397,13 @@ def run_dual_executor():
                     }
                     supabase.table("trade_signals").update(payload).eq("id", sig_id).execute()
                     if success:
-                        log.info(f"Signal #{sig_id} successfully executed and updated in Supabase.")
+                        log.info(f"Signal #{sig_id} successfully executed and recorded.")
                     else:
                         log.error(f"Signal #{sig_id} execution failed: {outcome}")
 
             time.sleep(3)
         except KeyboardInterrupt:
-            log.info("Stopping advanced institutional executor...")
+            log.info("Stopping executor...")
             if mt5_active:
                 mt5.shutdown()
             break

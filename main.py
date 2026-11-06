@@ -47,14 +47,10 @@ logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
-    """
-    Evaluates multi-timeframe structure, session timing, volatility regime,
-    and volume flow to assign an institutional conviction score (0 to 4).
-    """
     score = 0
     details = {}
     
-    # 1. Session Timing Check (Killzones: London & New York Active Hours UTC)
+    # 1. Session Timing Check (Killzones)
     utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
     if 7 <= hour <= 21:
@@ -71,7 +67,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['volatility_regime'] = 'CHOPPY_OR_RANGING'
 
-    # 3. Higher Timeframe (HTF) Trend Anchor Alignment
+    # 3. Higher Timeframe Trend Alignment
     macro_aligned = bool(sig.get("macro_trend_aligned", True))
     if macro_aligned:
         score += 1
@@ -79,11 +75,19 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['htf_alignment'] = 'COUNTER_TREND_WARNING'
 
-    # 4. Volume / Liquidity Surge Check
-    volume_surge = bool(sig.get("volume_surge", True))
-    if volume_surge:
+    # 4. Micro-structure Order Flow Delta Pressure Check
+    high = float(sig.get("high", sig["current_price"]))
+    low = float(sig.get("low", sig["current_price"]))
+    close = float(sig["current_price"])
+    if high != low:
+        delta_ratio = ((close - low) - (high - close)) / (high - low)
+    else:
+        delta_ratio = 0.0
+        
+    details['delta_ratio'] = round(delta_ratio, 3)
+    if abs(delta_ratio) >= 0.15:
         score += 1
-        details['order_flow'] = 'INSTITUTIONAL_VOLUME_CONFIRMED'
+        details['order_flow'] = 'INSTITUTIONAL_DELTA_CONFIRMED'
     else:
         details['order_flow'] = 'STANDARD_VOLUME'
 
@@ -96,7 +100,6 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
         asset_type = sig.get("asset_type", "FOREX").upper()
         symbol_str = sig["symbol"].upper()
         
-        # Robust automated exchange assignment based on asset symbol / type
         if asset_type == "CRYPTO" or "USDT" in symbol_str or symbol_str.endswith("USDT"):
             exchange_target = sig.get("exchange", "BINANCE")
             asset_type = "CRYPTO"
@@ -115,7 +118,6 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         
-        # Safely include exchange if the column exists in Supabase schema
         try:
             payload["exchange"] = exchange_target
             supabase.table("trade_signals").insert(payload).execute()
@@ -205,7 +207,7 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 record_pro_trader_history(sig, combined_score, f"{feedback} | Confluence: {confluence_details}")
                 push_candles_to_supabase(sig)
                 
-                if institutional_score >= 2:
+                if institutional_score >= 3:
                     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_detailed_signal(sig), parse_mode="Markdown", reply_markup=get_signal_inline_keyboard(sig['symbol']))
                     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=format_friend_signal(sig), parse_mode="Markdown")
                     
