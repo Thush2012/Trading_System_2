@@ -30,7 +30,7 @@ BITGET_API_KEY = os.getenv("BITGET_DEMO_API_KEY", "")
 BITGET_SECRET = os.getenv("BITGET_DEMO_SECRET", "")
 BITGET_PASSWORD = os.getenv("BITGET_DEMO_PASSWORD", "")
 
-CRYPTO_QTY = 0.001  # Minimized micro-quantity safe for $5-$10 small accounts
+CRYPTO_QTY = 0.001  
 MAX_OPEN_POSITIONS = 2
 
 DAILY_PROFIT_TARGET_USD = 1.00   
@@ -96,30 +96,6 @@ def check_latency_watchdog(mt5_active: bool, exchanges_dict: dict) -> bool:
             log.error(f"MT5 auto-reconnection failed: {e}")
         return False
     return True
-
-def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
-    score = 0
-    details = {}
-    
-    utc_now = datetime.now(timezone.utc)
-    hour = utc_now.hour
-    if 7 <= hour <= 21:
-        score += 1
-        details['session'] = 'OPTIMAL_KILLZONE'
-    else:
-        details['session'] = 'LOW_LIQUIDITY_HOUR'
-
-    adx = float(sig.get("adx", 26.0))
-    if adx >= 20.0:  
-        score += 1
-        details['volatility_regime'] = 'CLEAN_TREND'
-    else:
-        details['volatility_regime'] = 'CHOPPY_OR_RANGING'
-
-    score += 1
-    details['htf_alignment'] = 'STRUCTURE_VERIFIED'
-
-    return score, details
 
 def initialize_crypto_exchanges():
     exchanges = {}
@@ -278,10 +254,17 @@ def execute_forex_order(sig: dict):
         return False, pnl_reason
 
     symbol_raw = sig["symbol"]
-    broker_symbol = f"{symbol_raw}{SYMBOL_SUFFIX}"
+    # Check symbol with suffix first, then fallback to raw symbol if not found
+    broker_symbols = [f"{symbol_raw}{SYMBOL_SUFFIX}", symbol_raw]
+    broker_symbol = None
 
-    if not mt5.symbol_select(broker_symbol, True):
-        log.error(f"Symbol {broker_symbol} not found in Market Watch.")
+    for sym in broker_symbols:
+        if mt5.symbol_select(sym, True):
+            broker_symbol = sym
+            break
+
+    if not broker_symbol:
+        log.error(f"Symbol {symbol_raw} (and variants) not found in MT5 Market Watch.")
         return False, "SYMBOL_NOT_FOUND"
     
     tick = mt5.symbol_info_tick(broker_symbol)
@@ -327,6 +310,9 @@ def execute_forex_order(sig: dict):
             elif result and result.retcode == 10030:
                 continue
             else:
+                retcode = result.retcode if result else "UNKNOWN"
+                comment = result.comment if result else "No response"
+                log.warning(f"MT5 order attempt failed: Retcode {retcode} ({comment})")
                 break
         time.sleep(1)
 
@@ -370,7 +356,7 @@ def run_dual_executor():
                 for sig in signals:
                     sig_id = sig["id"]
                     
-                    # STALE SIGNAL CHECK: Auto-expire signals older than 10 minutes to unblock queue
+                    # STALE SIGNAL CHECK: Auto-expire signals older than 10 minutes
                     try:
                         created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
                         if (datetime.now(timezone.utc) - created_at).total_seconds() > 600:
@@ -383,20 +369,17 @@ def run_dual_executor():
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    score, _ = evaluate_institutional_confluence(sig)
-                    
-                    if score >= 2:
-                        if asset_type == "CRYPTO":
-                            success, outcome = execute_crypto_order(exchanges_dict, sig)
-                        else:
-                            if mt5_active:
-                                success, outcome = execute_forex_order(sig)
-                            else:
-                                outcome = "MT5_NOT_CONNECTED"
+                    # Accept signals pre-vetted by VPS scanner directly
+                    log.info(f"Processing Pending Signal #{sig_id} | Asset: {asset_type} | Symbol: {sig.get('symbol')} | Action: {sig.get('action')}")
+
+                    if asset_type == "CRYPTO":
+                        success, outcome = execute_crypto_order(exchanges_dict, sig)
                     else:
-                        success = False
-                        outcome = f"LOW_CONFLUENCE_SCORE_{score}/3"
-                        log.warning(f"Signal {sig_id} rejected locally due to low score: {score}/3")
+                        if mt5_active:
+                            success, outcome = execute_forex_order(sig)
+                        else:
+                        
+                            outcome = "MT5_NOT_CONNECTED"
 
                     payload = {
                         "status": "EXECUTED" if success else "FAILED",
@@ -404,6 +387,10 @@ def run_dual_executor():
                         "mt5_ticket": outcome if (success and asset_type == "FOREX") else None
                     }
                     supabase.table("trade_signals").update(payload).eq("id", sig_id).execute()
+                    if success:
+                        log.info(f"Signal #{sig_id} successfully executed and updated in Supabase.")
+                    else:
+                        log.error(f"Signal #{sig_id} execution failed: {outcome}")
 
             time.sleep(3)
         except KeyboardInterrupt:
