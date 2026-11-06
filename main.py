@@ -47,9 +47,14 @@ logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
+    """
+    Evaluates multi-timeframe structure, session timing, volatility regime,
+    and volume flow to assign an institutional conviction score (0 to 4).
+    """
     score = 0
     details = {}
     
+    # 1. Session Timing Check (Killzones: London & New York Active Hours UTC)
     utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
     if 7 <= hour <= 21:
@@ -58,6 +63,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['session'] = 'LOW_LIQUIDITY_HOUR'
 
+    # 2. Volatility & Choppiness Filter
     adx = float(sig.get("adx", 20.0))
     if adx >= 20.0:
         score += 1
@@ -65,6 +71,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['volatility_regime'] = 'CHOPPY_OR_RANGING'
 
+    # 3. Higher Timeframe (HTF) Trend Anchor Alignment
     macro_aligned = bool(sig.get("macro_trend_aligned", True))
     if macro_aligned:
         score += 1
@@ -72,6 +79,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['htf_alignment'] = 'COUNTER_TREND_WARNING'
 
+    # 4. Volume / Liquidity Surge Check
     volume_surge = bool(sig.get("volume_surge", True))
     if volume_surge:
         score += 1
@@ -88,6 +96,7 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
         asset_type = sig.get("asset_type", "FOREX").upper()
         symbol_str = sig["symbol"].upper()
         
+        # Robust automated exchange assignment based on asset symbol / type
         if asset_type == "CRYPTO" or "USDT" in symbol_str or symbol_str.endswith("USDT"):
             exchange_target = sig.get("exchange", "BINANCE")
             asset_type = "CRYPTO"
@@ -102,11 +111,18 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
             "sl": float(sig["sl"]),
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
             "asset_type": asset_type,
-            "exchange": exchange_target,
             "status": "PENDING",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
-        supabase.table("trade_signals").insert(payload).execute()
+        
+        # Safely include exchange if the column exists in Supabase schema
+        try:
+            payload["exchange"] = exchange_target
+            supabase.table("trade_signals").insert(payload).execute()
+        except Exception:
+            payload.pop("exchange", None)
+            supabase.table("trade_signals").insert(payload).execute()
+
         log.info(f"Signal pushed to Supabase for {sig['symbol']} [Exchange: {exchange_target}] with Institutional Score: {institutional_score}")
     except Exception as exc:
         log.error(f"Supabase queue error: {exc}")
@@ -176,7 +192,8 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                 indicators = {
                     "z_score": float(sig.get("z_score", 0.0)),
                     "adx": float(sig.get("adx", 0.0)),
-                    "macro_trend_aligned": bool(sig.get("macro_trend_aligned", True))
+                    "macro_trend_aligned": bool(sig.get("macro_trend_aligned", True)),
+                    "volume_surge": bool(sig.get("volume_surge", True))
                 }
                 
                 institutional_score, confluence_details = evaluate_institutional_confluence(sig)
