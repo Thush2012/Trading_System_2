@@ -74,22 +74,33 @@ def calculate_safe_lot_size(account_balance: float, risk_pct: float, entry_price
     return max(0.01, min(calculated_lots, 0.02))
 
 def check_latency_watchdog(mt5_active: bool, exchanges_dict: dict) -> bool:
-    if mt5_active:
-        terminal_info = mt5.terminal_info()
-        if not terminal_info or not terminal_info.connected:
-            log.warning("Watchdog Alert: MT5 connection lost or latency spike detected!")
-            return False
+    if not mt5_active:
+        return True
+    terminal_info = mt5.terminal_info()
+    if not terminal_info or not terminal_info.connected:
+        log.warning("Watchdog Alert: MT5 connection lost. Attempting automatic reconnection...")
+        try:
+            mt5.shutdown()
+            time.sleep(1)
+            success = False
+            if MT5_PATH:
+                success = mt5.initialize(path=MT5_PATH, login=MT5_ACCOUNT or None, password=MT5_PASSWORD or None, server=MT5_SERVER or None)
+            else:
+                success = mt5.initialize()
+                if success and MT5_ACCOUNT and MT5_PASSWORD and MT5_SERVER:
+                    mt5.login(login=MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER)
+            if success and mt5.terminal_info().connected:
+                log.info("MT5 Successfully Reconnected!")
+                return True
+        except Exception as e:
+            log.error(f"MT5 auto-reconnection failed: {e}")
+        return False
     return True
 
 def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
-    """
-    Evaluates session timing, volatility regime, and signal metadata
-    to enforce institutional conviction scoring before execution.
-    """
     score = 0
     details = {}
     
-    # 1. Session Timing Check (Killzones: London & New York Active Hours)
     utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
     if 7 <= hour <= 21:
@@ -98,7 +109,6 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['session'] = 'LOW_LIQUIDITY_HOUR'
 
-    # 2. Volatility / Regime Check
     adx = float(sig.get("adx", 26.0))
     if adx >= 20.0:  
         score += 1
@@ -106,7 +116,6 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         details['volatility_regime'] = 'CHOPPY_OR_RANGING'
 
-    # 3. Structure / Trend Anchor Alignment
     score += 1
     details['htf_alignment'] = 'STRUCTURE_VERIFIED'
 
@@ -114,7 +123,6 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
 
 def initialize_crypto_exchanges():
     exchanges = {}
-    
     if BINANCE_API_KEY and BINANCE_SECRET:
         try:
             ex = ccxt.binance({
@@ -171,7 +179,6 @@ def initialize_mt5() -> bool:
     return True
 
 def manage_active_mt5_positions_with_trailing_stop():
-    """Advanced MT5 trailing stop & break-even profit lock manager."""
     try:
         positions = mt5.positions_get()
         if not positions:
@@ -196,61 +203,19 @@ def manage_active_mt5_positions_with_trailing_stop():
                 sym_info = mt5.symbol_info(symbol)
                 digits = sym_info.digits if sym_info else 5
 
-                # Tier 1: Move SL to Break-Even when 40% to TP is reached
                 if current_distance >= (total_distance * 0.4):
                     if is_buy and (sl < entry):
-                        request = {
-                            "action": mt5.TRADE_ACTION_SLTP,
-                            "symbol": symbol,
-                            "position": ticket,
-                            "sl": round(entry, digits),
-                            "tp": round(tp, digits)
-                        }
+                        request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(entry, digits), "tp": round(tp, digits)}
                         result = mt5.order_send(request)
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                            log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
+                            log.info(f"[MT5 Trailing] #{ticket} ({symbol}) secured at Break-Even: {entry}")
                     elif not is_buy and (sl > entry or sl == 0):
-                        request = {
-                            "action": mt5.TRADE_ACTION_SLTP,
-                            "symbol": symbol,
-                            "position": ticket,
-                            "sl": round(entry, digits),
-                            "tp": round(tp, digits)
-                        }
+                        request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(entry, digits), "tp": round(tp, digits)}
                         result = mt5.order_send(request)
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                            log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) secured at Break-Even: {entry}")
-
-                # Tier 2: Aggressive Trailing Stop when 75% to TP is reached
-                if current_distance >= (total_distance * 0.75):
-                    if is_buy:
-                        new_sl = round(entry + (current_distance * 0.5), digits)
-                        if new_sl > sl:
-                            request = {
-                                "action": mt5.TRADE_ACTION_SLTP,
-                                "symbol": symbol,
-                                "position": ticket,
-                                "sl": new_sl,
-                                "tp": round(tp, digits)
-                            }
-                            result = mt5.order_send(request)
-                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                                log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
-                    else:
-                        new_sl = round(entry - (current_distance * 0.5), digits)
-                        if new_sl < sl or sl == 0:
-                            request = {
-                                "action": mt5.TRADE_ACTION_SLTP,
-                                "symbol": symbol,
-                                "position": ticket,
-                                "sl": new_sl,
-                                "tp": round(tp, digits)
-                            }
-                            result = mt5.order_send(request)
-                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                                log.info(f"[MT5 Trailing] Position #{ticket} ({symbol}) trailing lock updated to {new_sl}")
+                            log.info(f"[MT5 Trailing] #{ticket} ({symbol}) secured at Break-Even: {entry}")
     except Exception as e:
-        log.error(f"Error in manage_active_mt5_positions_with_trailing_stop: {e}")
+        log.error(f"Error in trailing stop manager: {e}")
 
 def execute_crypto_order(exchanges_dict, sig: dict):
     allowed, window_msg = is_execution_window_active()
@@ -266,7 +231,7 @@ def execute_crypto_order(exchanges_dict, sig: dict):
     order_id = None
     try:
         symbol_raw = sig["symbol"]
-        symbol_ccxt = f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
+        symbol_ccxt = symbol_raw if "/" in symbol_raw else f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
         action = sig["action"].upper()
         side = 'buy' if 'BUY' in action else 'sell'
         close_side = 'sell' if side == 'buy' else 'buy'
@@ -290,66 +255,17 @@ def execute_crypto_order(exchanges_dict, sig: dict):
             amount=CRYPTO_QTY
         )
         order_id = str(order['id'])
-        log.info(f"[{target_exchange}] MARKET ORDER FILLED (1x Leverage): {order_id} {symbol_ccxt} {side}")
+        log.info(f"[{target_exchange}] MARKET ORDER FILLED: {order_id} {symbol_ccxt} {side}")
 
-        sl_success, tp_success = False, False
+        stop_params = {'stopPrice': sl, 'triggerPrice': sl, 'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+        tp_params = {'stopPrice': tp, 'triggerPrice': tp, 'reduceOnly': True, 'workingType': 'MARK_PRICE'}
 
-        stop_params = {
-            'stopPrice': sl,
-            'triggerPrice': sl,
-            'reduceOnly': True,
-            'workingType': 'MARK_PRICE'
-        }
-        tp_params = {
-            'stopPrice': tp,
-            'triggerPrice': tp,
-            'reduceOnly': True,
-            'workingType': 'MARK_PRICE'
-        }
-
-        try:
-            exchange.create_order(
-                symbol=symbol_ccxt,
-                type='stop_market',
-                side=close_side,
-                amount=CRYPTO_QTY,
-                params=stop_params
-            )
-            sl_success = True
-            log.info(f"[{target_exchange}] Attached Stop Loss for {symbol_ccxt} at {sl}")
-        except Exception as sl_err:
-            log.error(f"[{target_exchange}] Failed to attach Stop Loss: {sl_err}")
-
-        try:
-            exchange.create_order(
-                symbol=symbol_ccxt,
-                type='take_profit_market',
-                side=close_side,
-                amount=CRYPTO_QTY,
-                params=tp_params
-            )
-            tp_success = True
-            log.info(f"[{target_exchange}] Attached Take Profit for {symbol_ccxt} at {tp}")
-        except Exception as tp_err:
-            log.error(f"[{target_exchange}] Failed to attach Take Profit: {tp_err}")
-
-        if not sl_success or not tp_success:
-            log.error(f"[{target_exchange}] SAFETY ALERT: SL/TP missing. Emergency closing position!")
-            try:
-                exchange.create_order(
-                    symbol=symbol_ccxt,
-                    type='market',
-                    side=close_side,
-                    amount=CRYPTO_QTY,
-                    params={'reduceOnly': True}
-                )
-            except Exception as close_err:
-                log.error(f"[{target_exchange}] Emergency close failed: {close_err}")
-            return False, "EMERGENCY_CLOSED_MISSING_SL_TP"
+        exchange.create_order(symbol=symbol_ccxt, type='stop_market', side=close_side, amount=CRYPTO_QTY, params=stop_params)
+        exchange.create_order(symbol=symbol_ccxt, type='take_profit_market', side=close_side, amount=CRYPTO_QTY, params=tp_params)
 
         return True, order_id
     except Exception as e:
-        log.error(f"[{target_exchange}] Order error: {e}")
+        log.error(f"[{target_exchange}] Crypto order error: {e}")
         return False, str(e)
 
 def execute_forex_order(sig: dict):
@@ -360,13 +276,6 @@ def execute_forex_order(sig: dict):
     pnl_allowed, pnl_reason, _ = check_daily_pnl_limits()
     if not pnl_allowed:
         return False, pnl_reason
-
-    try:
-        created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
-        if (datetime.now(timezone.utc) - created_at).total_seconds() > 300:
-            return False, "STALE_SIGNAL (>300s)"
-    except Exception:
-        pass
 
     symbol_raw = sig["symbol"]
     broker_symbol = f"{symbol_raw}{SYMBOL_SUFFIX}"
@@ -384,60 +293,17 @@ def execute_forex_order(sig: dict):
     sym_info = mt5.symbol_info(broker_symbol)
     digits = sym_info.digits if sym_info else 5
 
-    filling_modes = []
-    if sym_info and hasattr(sym_info, 'filling_mode'):
-        if sym_info.filling_mode & 1:
-            filling_modes.append(mt5.ORDER_FILLING_FOK)
-        if sym_info.filling_mode & 2:
-            filling_modes.append(mt5.ORDER_FILLING_IOC)
-        if sym_info.filling_mode & 4:
-            filling_modes.append(mt5.ORDER_FILLING_RETURN)
-    
-    if not filling_modes:
-        filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
-
-    positions = mt5.positions_get(symbol=broker_symbol)
-    if positions and len(positions) > 0:
-        current_pos = positions[0]
-        pos_is_buy = (current_pos.type == mt5.POSITION_TYPE_BUY)
-        
-        if pos_is_buy == is_buy:
-            return False, "DUPLICATE_DIRECTION_ACTIVE"
-        else:
-            log.info(f"Direction flip detected for {broker_symbol}! Closing counter-trend position #{current_pos.ticket}.")
-            for mode in filling_modes:
-                request_close = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": broker_symbol,
-                    "volume": current_pos.volume,
-                    "type": mt5.ORDER_TYPE_SELL if pos_is_buy else mt5.ORDER_TYPE_BUY,
-                    "position": current_pos.ticket,
-                    "price": tick.bid if pos_is_buy else tick.ask,
-                    "deviation": 50,
-                    "magic": 992026,
-                    "comment": "DirectionFlip_Close",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mode,
-                }
-                res_close = mt5.order_send(request_close)
-                if res_close and res_close.retcode == mt5.TRADE_RETCODE_DONE:
-                    break
-
+    filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
     account_info = mt5.account_info()
     balance = account_info.balance if account_info else 5.0
 
     dynamic_lot = calculate_safe_lot_size(balance, risk_pct=1.0, entry_price=(tick.ask if is_buy else tick.bid), sl_price=float(sig["sl"]))
 
-    max_retries = 3
-    deviation_steps = [30, 75, 150]
-
-    for attempt in range(max_retries):
+    for attempt in range(3):
         current_tick = mt5.symbol_info_tick(broker_symbol)
         if not current_tick:
             continue
-            
         price = current_tick.ask if is_buy else current_tick.bid
-        deviation = deviation_steps[attempt]
 
         for filling in filling_modes:
             request = {
@@ -448,28 +314,22 @@ def execute_forex_order(sig: dict):
                 "price": round(price, digits),
                 "sl": round(float(sig["sl"]), digits),
                 "tp": round(float(sig["tp"]), digits),
-                "deviation": deviation,
+                "deviation": 50,
                 "magic": 992026,
                 "comment": f"Institutional_{action}",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": filling,
             }
-            
             result = mt5.order_send(request)
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                log.info(f"MT5 ORDER FILLED (Attempt {attempt+1}): #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
+                log.info(f"MT5 ORDER FILLED: #{result.order} {broker_symbol} {action} | Lots: {dynamic_lot}")
                 return True, str(result.order)
             elif result and result.retcode == 10030:
                 continue
             else:
-                retcode = result.retcode if result else "UNKNOWN"
-                comment = result.comment if result else "No response"
-                log.warning(f"MT5 order attempt {attempt+1} failed on {broker_symbol}: Retcode {retcode} ({comment})")
                 break
-
         time.sleep(1)
 
-    log.error(f"MT5 order permanently failed on {broker_symbol} after {max_retries} attempts.")
     return False, "MAX_RETRIES_EXCEEDED"
 
 def run_dual_executor():
@@ -509,10 +369,21 @@ def run_dual_executor():
             if signals:
                 for sig in signals:
                     sig_id = sig["id"]
+                    
+                    # STALE SIGNAL CHECK: Auto-expire signals older than 10 minutes to unblock queue
+                    try:
+                        created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
+                        if (datetime.now(timezone.utc) - created_at).total_seconds() > 600:
+                            supabase.table("trade_signals").update({"status": "EXPIRED", "error_message": "STALE_SIGNAL (>600s)"}).eq("id", sig_id).execute()
+                            log.warning(f"Expired stale signal {sig_id} from queue.")
+                            continue
+                    except Exception:
+                        pass
+
                     asset_type = sig.get("asset_type", "FOREX").upper()
                     success, outcome = False, ""
 
-                    score, confluence_details = evaluate_institutional_confluence(sig)
+                    score, _ = evaluate_institutional_confluence(sig)
                     
                     if score >= 2:
                         if asset_type == "CRYPTO":

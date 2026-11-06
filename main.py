@@ -47,10 +47,6 @@ logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
-    """
-    Evaluates multi-timeframe structure, session timing, volatility regime,
-    and volume flow to assign an institutional conviction score (0 to 4).
-    """
     score = 0
     details = {}
     
@@ -92,7 +88,6 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
         asset_type = sig.get("asset_type", "FOREX").upper()
         symbol_str = sig["symbol"].upper()
         
-        # Robust automated exchange assignment based on asset symbol / type
         if asset_type == "CRYPTO" or "USDT" in symbol_str or symbol_str.endswith("USDT"):
             exchange_target = sig.get("exchange", "BINANCE")
             asset_type = "CRYPTO"
@@ -108,7 +103,8 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
             "asset_type": asset_type,
             "exchange": exchange_target,
-            "status": "PENDING"
+            "status": "PENDING",
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
         supabase.table("trade_signals").insert(payload).execute()
         log.info(f"Signal pushed to Supabase for {sig['symbol']} [Exchange: {exchange_target}] with Institutional Score: {institutional_score}")
