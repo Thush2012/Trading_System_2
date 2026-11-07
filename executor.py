@@ -22,7 +22,7 @@ MT5_SERVER = os.getenv("MT5_SERVER", "")
 SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
 MT5_PATH = os.getenv("MT5_PATH", "")
 
-# Crypto API Credentials (Binance & Bitget)
+# Crypto API Credentials (Binance & Bitget Demo/Sandbox)
 BINANCE_API_KEY = os.getenv("BINANCE_DEMO_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_DEMO_SECRET", "")
 
@@ -72,6 +72,35 @@ def calculate_safe_lot_size(account_balance: float, risk_pct: float, entry_price
         return 0.01
     calculated_lots = round(risk_amount_usd / (pips_risk * 100000 * 0.1), 2)
     return max(0.01, min(calculated_lots, 0.02))
+
+def get_venue_assets(exchanges_dict: dict) -> dict:
+    """Fetch individual account balances and assets across all venues"""
+    assets = {}
+    
+    # MT5 Venue Assets
+    if mt5.terminal_info() and mt5.terminal_info().connected:
+        acc = mt5.account_info()
+        if acc:
+            assets["MT5"] = {"balance": acc.balance, "equity": acc.equity, "margin_free": acc.margin_free}
+            
+    # Binance Venue Assets
+    if "BINANCE" in exchanges_dict:
+        try:
+            b_bal = exchanges_dict["BINANCE"].fetch_balance()
+            assets["BINANCE"] = {"balance": b_bal.get('total', {}).get('USDT', 0), "equity": b_bal.get('free', {}).get('USDT', 0)}
+        except Exception as e:
+            log.error(f"Failed to fetch Binance assets: {e}")
+
+    # Bitget Venue Assets
+    if "BITGET" in exchanges_dict:
+        try:
+            bg_bal = exchanges_dict["BITGET"].fetch_balance()
+            assets["BITGET"] = {"balance": bg_bal.get('total', {}).get('USDT', 0), "equity": bg_bal.get('free', {}).get('USDT', 0)}
+        except Exception as e:
+            log.error(f"Failed to fetch Bitget assets: {e}")
+
+            
+    return assets
 
 def check_latency_watchdog(mt5_active: bool, exchanges_dict: dict) -> bool:
     if not mt5_active:
@@ -155,6 +184,7 @@ def initialize_mt5() -> bool:
     return True
 
 def manage_active_mt5_positions_with_trailing_stop():
+    """Active MT5 Break-Even and Trailing Stop Logic"""
     try:
         positions = mt5.positions_get()
         if not positions:
@@ -179,6 +209,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                 sym_info = mt5.symbol_info(symbol)
                 digits = sym_info.digits if sym_info else 5
 
+                # Move to break-even or trail when 40% towards TP
                 if current_distance >= (total_distance * 0.4):
                     if is_buy and (sl < entry):
                         request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(entry, digits), "tp": round(tp, digits)}
@@ -191,7 +222,73 @@ def manage_active_mt5_positions_with_trailing_stop():
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                             log.info(f"[MT5 Trailing] #{ticket} ({symbol}) secured at Break-Even: {entry}")
     except Exception as e:
-        log.error(f"Error in trailing stop manager: {e}")
+        log.error(f"Error in MT5 trailing stop manager: {e}")
+
+def manage_active_crypto_positions_with_trailing_stop(exchanges_dict: dict):
+    """Active Crypto Trailing Stop & Position Risk Management via CCXT"""
+    for ex_name, exchange in exchanges_dict.items():
+        try:
+            positions = exchange.fetch_positions()
+            for pos in positions:
+                if float(pos.get('contracts', 0)) == 0:
+                    continue
+                
+                symbol = pos['symbol']
+                entry_price = float(pos['entryPrice'])
+                side = pos['side'] # 'long' or 'short'
+                mark_price = float(pos.get('markPrice', entry_price))
+                
+                # Dynamic trailing calculation: lock profits if favorable movement exceeds threshold
+                profit_pct = (mark_price - entry_price) / entry_price if side == 'long' else (entry_price - mark_price) / entry_price
+                
+                if profit_pct >= 0.005:  # 0.5% favorable move triggers break-even/trailing adjustment
+                    open_orders = exchange.fetch_open_orders(symbol)
+                    stop_orders = [o for o in open_orders if o['type'] in ['stop_market', 'stop']]
+                    
+                    # Adjust stop loss to break-even if not already secured
+                    new_sl = entry_price
+                    for so in stop_orders:
+                        trigger_price = float(so.get('triggerPrice', so.get('stopPrice', 0)))
+                        if side == 'long' and trigger_price < entry_price:
+                            exchange.cancel_order(so['id'], symbol)
+                            exchange.create_order(symbol, 'stop_market', 'sell', pos['contracts'], params={'stopPrice': new_sl, 'triggerPrice': new_sl, 'reduceOnly': True})
+                            log.info(f"[{ex_name} Trailing] Secured Long position on {symbol} at Break-Even: {new_sl}")
+                        elif side == 'short' and (trigger_price > entry_price or trigger_price == 0):
+                            exchange.cancel_order(so['id'], symbol)
+                            exchange.create_order(symbol, 'stop_market', 'buy', pos['contracts'], params={'stopPrice': new_sl, 'triggerPrice': new_sl, 'reduceOnly': True})
+                            log.info(f"[{ex_name} Trailing] Secured Short position on {symbol} at Break-Even: {new_sl}")
+        except Exception as e:
+            log.error(f"Error in {ex_name} crypto trailing manager: {e}")
+
+def generate_and_send_eod_reports(exchanges_dict: dict):
+    """Generate and log end-of-day individual venue trade performance"""
+    log.info("========== END OF DAY (EOD) TRADE PERFORMANCE REPORT ==========")
+    
+    # 1. MT5 EOD Report
+    try:
+        now = datetime.now()
+        start_of_day = datetime.combine(now.date(), dt_time.min)
+        deals = mt5.history_deals_get(start_of_day, now)
+        if deals:
+            mt5_closed = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
+            mt5_pnl = sum(d.profit + d.swap + d.commission for d in mt5_closed)
+            log.info(f"[MT5 EOD] Total Trades: {len(mt5_closed)} | Net PnL: ${mt5_pnl:.2f}")
+        else:
+            log.info("[MT5 EOD] No trades recorded today.")
+    except Exception as e:
+        log.error(f"MT5 EOD report error: {e}")
+
+    # 2. Crypto Exchanges EOD Reports (Binance & Bitget)
+    for ex_name, exchange in exchanges_dict.items():
+        try:
+            since = int(datetime.combine(datetime.now().date(), dt_time.min).timestamp() * 1000)
+            closed_trades = exchange.fetch_my_trades(since=since)
+            crypto_pnl = sum(float(t.get('info', {}).get('realizedPnl', 0)) for t in closed_trades)
+            log.info(f"[{ex_name} EOD] Executions: {len(closed_trades)} | Realized PnL: ${crypto_pnl:.2f}")
+        except Exception as e:
+            log.error(f"[{ex_name} EOD] report error: {e}")
+            
+    log.info("================================================================")
 
 def execute_crypto_order(exchanges_dict, sig: dict):
     allowed, window_msg = is_execution_window_active()
@@ -326,20 +423,37 @@ def run_dual_executor():
     mt5_active = initialize_mt5()
     exchanges_dict = initialize_crypto_exchanges()
 
-    log.info("Advanced Multi-Exchange Institutional Executor Online with Atomic Locking...")
+    log.info("Advanced Multi-Exchange Institutional Executor Online with Atomic Locking & Trailing Engine...")
+    
+    eod_reported_today = False
 
     while True:
         try:
-            if datetime.now(LOCAL_TZ).weekday() >= 5:
+            now = datetime.now(LOCAL_TZ)
+            
+            # Weekend filter
+            if now.weekday() >= 5:
                 time.sleep(60)
                 continue
+
+            # Automated End-of-Day Report Trigger at 23:59 UTC
+            utc_now = datetime.now(timezone.utc)
+            if utc_now.hour == 23 and utc_now.minute == 59 and not eod_reported_today:
+                generate_and_send_eod_reports(exchanges_dict)
+                eod_reported_today = True
+            
+            # Reset EOD flag on a new UTC day
+            if utc_now.hour == 0:
+                eod_reported_today = False
 
             if not check_latency_watchdog(mt5_active, exchanges_dict):
                 time.sleep(10)
                 continue
 
+            # Manage active positions & trailing stops across venues
             if mt5_active:
                 manage_active_mt5_positions_with_trailing_stop()
+            manage_active_crypto_positions_with_trailing_stop(exchanges_dict)
 
             # Atomic claim query: Fetch oldest PENDING signal
             res = (
