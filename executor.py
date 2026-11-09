@@ -138,7 +138,7 @@ def initialize_crypto_exchanges():
             ex = ccxt.bitget({
                 'apiKey': BITGET_API_KEY,
                 'secret': BITGET_SECRET,
-                'password': BITGET_PASSWORD,  # Ensure password is passed here
+            
                 'options': {'defaultType': 'swap'}
             })
             ex.set_sandbox_mode(True)
