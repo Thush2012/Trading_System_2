@@ -16,7 +16,7 @@ log = setup_system_logger("TelegramBot")
 FOREX_PAIRS_DISPLAY = "USDJPY, EURGBP, AUDUSD, EURUSD, GBPJPY, BTCUSDT, ETHUSDT"
 global_scanner = LightweightScanner()
 
-def get_main_keyboard():
+def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             ["⚡ Scan Market Opportunities", "📈 Live Dashboard"],
@@ -71,6 +71,8 @@ def get_signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     msg = (
         "💎 *Institutional Pro Trading & Memory Engine*\n\n"
         f"• *Monitored Assets:* {FOREX_PAIRS_DISPLAY}\n"
@@ -80,6 +82,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     in_window = global_scanner.is_within_trading_window()
     state_str = "🟢 EXECUTION ACTIVE" if in_window else "⏸️ STANDBY"
     rec_active = memory_guard.state.get("in_recovery", False)
@@ -96,6 +100,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     await update.message.reply_text("🔍 *Running Institutional Multi-Asset Scan...*", parse_mode="Markdown")
     df = await global_scanner.scan_all(bypass_cooldown=True, enforce_window=False)
     if df is None or df.empty:
@@ -108,6 +114,8 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(format_friend_signal(sig), parse_mode="Markdown")
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     await update.message.reply_text("📊 *Generating Live Institutional Dashboard...*", parse_mode="Markdown")
     chart_buf = generate_performance_chart([])
     
@@ -130,16 +138,22 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not query:
+        return
     await query.answer()
     data = query.data
+    if not data:
+        return
     if data.startswith("exec_"):
         sym = data.split("_")[1]
-        await query.edit_message_text(text=f"✅ *Signal for {sym} accepted!* Please place manually in your terminal.", parse_mode="Markdown")
+        await query.edit_message_text(text=f"✅ *Signal for {sym} accepted!* Please place manually in your terminal.", parse_Mode="Markdown")
     elif data.startswith("reject_"):
         sym = data.split("_")[1]
         await query.edit_message_text(text=f"❌ *Signal for {sym} dismissed.*", parse_mode="Markdown")
 
 async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
     text = update.message.text
     if text == "⚡ Scan Market Opportunities":
         await cmd_scan(update, context)
