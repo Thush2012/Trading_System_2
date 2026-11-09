@@ -1,6 +1,7 @@
-import os
 import json
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
+
 from core.logger import setup_system_logger
 
 log = setup_system_logger("LossMemory")
@@ -33,7 +34,7 @@ class LossMemoryEngine:
             log.error(f"Could not save memory file: {err}")
 
     def register_stop_loss(self, symbol: str, direction: str, loss_usd: float, adx_at_entry: float):
-        now_ts = datetime.now(timezone.utc).timestamp()
+        now_ts = datetime.now(UTC).timestamp()
         pattern_id = f"{symbol}_{direction.upper()}"
 
         self.state["locked_directions"][pattern_id] = {
@@ -61,7 +62,7 @@ class LossMemoryEngine:
         self._write_disk()
 
     def check_permission(self, symbol: str, direction: str, current_adx: float) -> tuple[bool, str, dict]:
-        now_ts = datetime.now(timezone.utc).timestamp()
+        now_ts = datetime.now(UTC).timestamp()
         pattern_id = f"{symbol}_{direction.upper()}"
 
         # Clean up expired bans

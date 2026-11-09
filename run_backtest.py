@@ -1,7 +1,9 @@
 import asyncio
+
+from core.backtester import BacktestEngine
 from core.data_fetcher import UnifiedDataFetcher
 from core.strategy import StrategyEngine
-from core.backtester import BacktestEngine
+
 
 async def run_simulation():
     fetcher = UnifiedDataFetcher()

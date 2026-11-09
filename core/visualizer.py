@@ -1,8 +1,12 @@
 import io
+
 import matplotlib
+
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import datetime
+
+import matplotlib.pyplot as plt
+
 
 def generate_performance_chart(trades_history: list) -> io.BytesIO:
     """Generates an equity curve PNG chart in memory from trade history."""

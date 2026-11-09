@@ -1,13 +1,14 @@
-import streamlit as st
 import asyncio
-import pandas as pd
 import time
+
 import MetaTrader5 as mt5
-from core.scanner import MultiTimeframeScanner
+import streamlit as st
+
 from core.backtester import Backtester
-from core.data_fetcher import UnifiedDataFetcher
 from core.config import Config
+from core.data_fetcher import UnifiedDataFetcher
 from core.mt5_connection import connect_mt5
+from core.scanner import MultiTimeframeScanner
 
 st.set_page_config(
     page_title="Dual-Market Trading Terminal",

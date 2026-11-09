@@ -1,7 +1,8 @@
-import subprocess
-import time
-import sys
 import os
+import subprocess
+import sys
+import time
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,9 +13,9 @@ MAIN_SCRIPT = os.path.join(PROJECT_DIR, "main.py")
 
 os.chdir(PROJECT_DIR)
 
-from core.notifier import TelegramNotifier
 from core.config import Config
 from core.logger import setup_system_logger
+from core.notifier import TelegramNotifier
 
 log = setup_system_logger("DeployWatcher")
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)

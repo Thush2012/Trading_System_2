@@ -1,5 +1,7 @@
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 import feedparser
+
 from core.logger import setup_system_logger
 
 log = setup_system_logger("NewsFilter")
@@ -30,7 +32,7 @@ class EconomicCalendarShield:
             if not feed.entries:
                 return True, "Calendar feed unavailable (defaulting to safe)"
 
-            now_utc = datetime.now(timezone.utc)
+            now_utc = datetime.now(UTC)
             buffer_delta = timedelta(minutes=self.buffer_minutes)
 
             for entry in feed.entries:

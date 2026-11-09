@@ -1,6 +1,8 @@
 import os
+
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
+
 from core.logger import setup_system_logger
 
 load_dotenv()

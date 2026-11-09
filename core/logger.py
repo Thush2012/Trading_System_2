@@ -1,6 +1,6 @@
 import logging
 from logging.handlers import RotatingFileHandler
-import os
+
 
 def setup_system_logger(name: str = "TradingSystem", log_file: str = "trading_system.log") -> logging.Logger:
     """

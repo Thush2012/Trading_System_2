@@ -1,8 +1,10 @@
 import os
+from datetime import UTC  # <--- Make sure timezone is imported here
+
 import pandas as pd
-from datetime import datetime, timezone  # <--- Make sure timezone is imported here
+from supabase import create_client
+
 from core.logger import setup_system_logger
-from supabase import create_client, Client
 
 log = setup_system_logger("StrategyOptimizer")
 
@@ -37,7 +39,7 @@ class StrategyOptimizer:
             self.supabase.table("bot_brain").upsert({
                 "pair": symbol,
                 "optimized_rsi": best_rsi_threshold,
-                "updated_at": pd.Timestamp.now(timezone.utc).isoformat()
+                "updated_at": pd.Timestamp.now(UTC).isoformat()
             }).execute()
             
             log.info(f"Optimization complete for {symbol}. Best RSI Threshold: {best_rsi_threshold}")

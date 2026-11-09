@@ -1,7 +1,9 @@
-import os
 import json
-from datetime import datetime, timezone
-from supabase import create_client, Client
+import os
+from datetime import UTC, datetime
+
+from supabase import Client, create_client
+
 from core.logger import setup_system_logger
 
 log = setup_system_logger("AdaptiveBrain")
@@ -79,7 +81,7 @@ class LossMemoryEngine:
                 "total_wins": rule["wins"],
                 "total_losses": rule["losses"],
                 "banned_utc_hours": rule["hour_losses"],
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "updated_at": datetime.now(UTC).isoformat()
             }
             self.supabase.table("bot_learning_memory").upsert(payload).execute()
         except Exception as e:
@@ -98,7 +100,7 @@ class LossMemoryEngine:
         return self.state["learned_rules"][symbol]
 
     def register_stop_loss(self, symbol: str, direction: str, loss_usd: float, adx_at_entry: float):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         now_ts = now.timestamp()
         current_hour = str(now.hour)
         pattern_id = f"{symbol}_{direction.upper()}"
@@ -160,7 +162,7 @@ class LossMemoryEngine:
         self._push_rule_to_cloud(symbol, rule)
 
     def check_permission(self, symbol: str, direction: str, current_adx: float) -> tuple[bool, str, dict]:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         now_ts = now.timestamp()
         current_hour = str(now.hour)
         pattern_id = f"{symbol}_{direction.upper()}"

@@ -1,10 +1,14 @@
-import os
-import logging
-import io
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import ContextTypes
-from core.scanner import LightweightScanner, memory_guard
+
 from core.logger import setup_system_logger
+from core.scanner import LightweightScanner, memory_guard
 from core.visualizer import generate_performance_chart
 
 log = setup_system_logger("TelegramBot")

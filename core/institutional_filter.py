@@ -1,7 +1,8 @@
-import os
+from datetime import UTC, datetime
+
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timezone
+
 from core.logger import setup_system_logger
 from core.pro_tracker import ProTraderTracker
 
@@ -18,7 +19,7 @@ class InstitutionalFilterEngine:
 
     def check_news_sentiment_guard(self) -> tuple[bool, str]:
         """Simulates an NLP News Guard. Blocks trading during high-impact structural windows."""
-        current_utc_hour = datetime.now(timezone.utc).hour
+        current_utc_hour = datetime.now(UTC).hour
         if current_utc_hour in [12, 13]:  # High-impact news window block
             return False, "NLP News Guard: High-impact macroeconomic news window active."
         return True, "News Sentiment Clear"
@@ -76,7 +77,7 @@ class InstitutionalFilterEngine:
         if not pro_ok:
             return False, pro_reason, {}
 
-        current_month = datetime.now(timezone.utc).month
+        current_month = datetime.now(UTC).month
         season_multiplier = self.seasonal_bias.get(symbol, {}).get(current_month, 1.0)
 
         meta = {

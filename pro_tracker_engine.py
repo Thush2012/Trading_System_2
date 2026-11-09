@@ -1,8 +1,9 @@
-import os
 import logging
-from datetime import datetime, timezone
-import yfinance as yf
+import os
+from datetime import UTC, datetime
+
 import pandas as pd
+import yfinance as yf
 from supabase import create_client
 
 logger = logging.getLogger("ProTrackerEngine")
@@ -37,7 +38,7 @@ class ProTraderTracker:
             "consensus": "BULLISH" if score > 0 else "NEUTRAL",
             "score": float(score * 25.0),
             "institutional_alignment": True,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat()
         }
 
     def evaluate_market_against_pro_rules(self, symbol: str, current_price: float, indicators: dict) -> tuple:
@@ -146,7 +147,7 @@ class ProTraderTracker:
                     "symbol": strat.get("symbol", "BTCUSDT"),
                     "action": strat.get("action", "BUY"),
                     "entry_price": float(strat.get("entry_price", 0.0)),
-                    "created_at": datetime.now(timezone.utc).isoformat()
+                    "created_at": datetime.now(UTC).isoformat()
                 }
                 self.supabase.table("pro_trader_history").insert(payload).execute()
             

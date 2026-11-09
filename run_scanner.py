@@ -1,6 +1,7 @@
 import asyncio
-from core.scanner import LightweightScanner
+
 from core.logger import setup_system_logger
+from core.scanner import LightweightScanner
 
 log = setup_system_logger("StandaloneScanner")
 

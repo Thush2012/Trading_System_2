@@ -1,6 +1,7 @@
-import os
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
+
 from supabase import create_client
 
 logger = logging.getLogger("ProTrackerEngine")
@@ -39,7 +40,7 @@ class ProTraderTracker:
             "consensus": "BULLISH" if score > 0 else "NEUTRAL",
             "score": float(score * 45.0),
             "institutional_alignment": True,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat()
         }
 
     def evaluate_market_against_pro_rules(self, symbol: str, current_price: float, indicators: dict) -> tuple:
@@ -87,7 +88,7 @@ class ProTraderTracker:
         """Runs day-to-day pro trader history analysis and weight evolution."""
         logger.info("Running day-to-day pro trader history analysis and weight evolution...")
         try:
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             log_data = {
                 "timestamp": timestamp,
                 "status": "completed",

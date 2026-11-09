@@ -1,8 +1,8 @@
+import logging
 import os
+import subprocess
 import sys
 import time
-import subprocess
-import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (Supervisor) %(message)s")
 log = logging.getLogger("Supervisor")

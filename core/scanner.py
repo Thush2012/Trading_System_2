@@ -1,7 +1,8 @@
-import pandas as pd
-import numpy as np
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
+import numpy as np
+import pandas as pd
 import yfinance as yf
 
 log = logging.getLogger("LightweightScanner")
@@ -137,7 +138,7 @@ class LightweightScanner:
                         "trend_1h": trend_4h,
                         "trend_4h": trend_daily,
                         "asset_type": info["asset_type"],
-                        "timestamp": datetime.now(timezone.utc).isoformat()
+                        "timestamp": datetime.now(UTC).isoformat()
                     })
             except Exception as e:
                 log.error(f"Error scanning {symbol}: {e}")

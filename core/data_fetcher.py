@@ -1,8 +1,6 @@
-import asyncio
-from datetime import datetime, timezone
+import ccxt.async_support as ccxt
 import MetaTrader5 as mt5
 import pandas as pd
-import ccxt.async_support as ccxt
 
 # Map timeframe strings to MT5 constants
 MT5_TIMEFRAME_MAP = {

@@ -1,8 +1,9 @@
 import os
+
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta, timezone
-from supabase import create_client, Client
+from supabase import Client, create_client
+
 from core.logger import setup_system_logger
 
 log = setup_system_logger("DataWarehouse")

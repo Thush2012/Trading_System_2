@@ -1,10 +1,12 @@
-import time
-import schedule
 import asyncio
+import time
 import traceback
-from run_live_engine import run_trading_cycle, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from core.notifier import TelegramNotifier
+
+import schedule
+
 from core.logger import setup_system_logger
+from core.notifier import TelegramNotifier
+from run_live_engine import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, run_trading_cycle
 
 log = setup_system_logger("Daemon")
 notifier = TelegramNotifier(bot_token=TELEGRAM_BOT_TOKEN, chat_id=TELEGRAM_CHAT_ID)
@@ -20,7 +22,7 @@ def execute_safe_cycle():
         log.error(f"Critical execution fault: {e}\n{error_details}")
         
         # Send error alert to Telegram so you are notified of issues immediately
-        fail_msg = f"⚠️ *Trading Engine Alert*\nError during cycle: `{str(e)}`\nCheck `trading_system.log` for details."
+        fail_msg = f"⚠️ *Trading Engine Alert*\nError during cycle: `{e!s}`\nCheck `trading_system.log` for details."
         notifier.send_alert(fail_msg)
 
 # Schedule execution at the top of every hour (:00)

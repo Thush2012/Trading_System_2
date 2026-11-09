@@ -1,5 +1,7 @@
 import asyncio
+
 from core.data_fetcher import UnifiedDataFetcher
+
 
 async def main():
     fetcher = UnifiedDataFetcher()

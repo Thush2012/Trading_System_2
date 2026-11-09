@@ -1,6 +1,8 @@
 import asyncio
+
 import ccxt.async_support as ccxt
 import MetaTrader5 as mt5
+
 
 def test_forex():
     print("--- 1. Testing Forex (MetaTrader 5) ---")

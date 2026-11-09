@@ -1,11 +1,13 @@
+import logging
 import os
 import time
-import logging
-from datetime import datetime, time as dt_time
+from datetime import datetime
+from datetime import time as dt_time
+
+import MetaTrader5 as mt5
 import pytz
 from dotenv import load_dotenv
-from supabase import create_client, Client
-import MetaTrader5 as mt5
+from supabase import Client, create_client
 
 load_dotenv()
 

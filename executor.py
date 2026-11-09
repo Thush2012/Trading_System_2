@@ -1,12 +1,14 @@
+import logging
 import os
 import time
-import logging
-from datetime import datetime, time as dt_time, timezone
+from datetime import UTC, datetime
+from datetime import time as dt_time
+
+import ccxt
+import MetaTrader5 as mt5
 import pytz
 from dotenv import load_dotenv
-from supabase import create_client, Client
-import MetaTrader5 as mt5
-import ccxt
+from supabase import Client, create_client
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -194,12 +196,7 @@ def manage_active_mt5_positions_with_trailing_stop():
                 
                 # Move to break-even or trail when 40% towards TP
                 if current_distance >= (total_distance * 0.4):
-                    if is_buy and (sl < entry):
-                        request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(entry, digits), "tp": round(tp, digits)}
-                        result = mt5.order_send(request)
-                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                            log.info(f"[MT5 Trailing] #{ticket} ({symbol}) secured at Break-Even: {entry}")
-                    elif not is_buy and (sl > entry or sl == 0):
+                    if is_buy and (sl < entry) or not is_buy and (sl > entry or sl == 0):
                         request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(entry, digits), "tp": round(tp, digits)}
                         result = mt5.order_send(request)
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -412,7 +409,7 @@ def run_dual_executor():
                 continue
                 
             # Automated End-of-Day Report Trigger at 23:59 UTC
-            utc_now = datetime.now(timezone.utc)
+            utc_now = datetime.now(UTC)
             if utc_now.hour == 23 and utc_now.minute == 59 and not eod_reported_today:
                 generate_and_send_eod_reports(exchanges_dict)
                 eod_reported_today = True
@@ -458,7 +455,7 @@ def run_dual_executor():
                     # STALE SIGNAL CHECK: Auto-expire signals older than 10 minutes
                     try:
                         created_at = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
-                        if (datetime.now(timezone.utc) - created_at).total_seconds() > 600:
+                        if (datetime.now(UTC) - created_at).total_seconds() > 600:
                             supabase.table("trade_signals").update({"status": "EXPIRED", "error_message": "STALE_SIGNAL (>600s)"}).eq("id", sig_id).execute()
                             log.warning(f"Expired stale signal {sig_id} from queue.")
                             continue

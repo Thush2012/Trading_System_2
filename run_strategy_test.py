@@ -1,6 +1,8 @@
 import asyncio
+
 from core.data_fetcher import UnifiedDataFetcher
 from core.strategy import StrategyEngine
+
 
 async def main():
     fetcher = UnifiedDataFetcher()

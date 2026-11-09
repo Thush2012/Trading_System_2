@@ -1,8 +1,9 @@
 import os
+
+import ccxt
+import MetaTrader5 as mt5
 from dotenv import load_dotenv
 from supabase import create_client
-import MetaTrader5 as mt5
-import ccxt
 
 load_dotenv()
 

@@ -1,15 +1,17 @@
 import asyncio
-import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 import MetaTrader5 as mt5
+import pandas as pd
+
 from core.config import Config
-from core.scanner import MultiTimeframeScanner
-from core.risk_manager import RiskManager
 from core.executor import ExecutionEngine
-from core.notifier import TelegramNotifier
 from core.logger import setup_system_logger
-from core.news_filter import EconomicCalendarShield
 from core.mt5_connection import connect_mt5
+from core.news_filter import EconomicCalendarShield
+from core.notifier import TelegramNotifier
+from core.risk_manager import RiskManager
+from core.scanner import MultiTimeframeScanner
 
 log = setup_system_logger("LiveEngine")
 
@@ -50,7 +52,7 @@ def audit_closed_trades(notifier: TelegramNotifier):
     if not connect_mt5():
         return
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     deals = mt5.history_deals_get(now - timedelta(hours=2), now)
 
     if not deals:

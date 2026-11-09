@@ -1,5 +1,6 @@
 import requests
 
+
 class TelegramNotifier:
     def __init__(self, bot_token: str = None, chat_id: str = None):
         self.bot_token = bot_token

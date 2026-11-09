@@ -1,26 +1,35 @@
-import os
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
+
 import pytz
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from supabase import create_client, Client
+from supabase import Client, create_client
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
 from core.config import Config
 from core.logger import setup_system_logger
-from core.tracker import TradeTracker
-from core.pro_tracker import ProTraderTracker
 from core.optimizer import StrategyOptimizer
+from core.pro_tracker import ProTraderTracker
+from core.tracker import TradeTracker
 from pro_tracker_engine import ProTrackerEngine
 from telegram_bot import (
-    cmd_start,
     cmd_scan,
+    cmd_start,
     cmd_status,
-    handle_button_press,
-    handle_callback_query,
     format_detailed_signal,
     format_friend_signal,
     get_signal_inline_keyboard,
-    global_scanner
+    global_scanner,
+    handle_button_press,
+    handle_callback_query,
 )
 
 log = setup_system_logger("MasterEngine")
@@ -51,7 +60,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     details = {}
     
     # 1. Session Timing Check (Killzones)
-    utc_now = datetime.now(timezone.utc)
+    utc_now = datetime.now(UTC)
     hour = utc_now.hour
     if 7 <= hour <= 21:
         score += 1
@@ -115,7 +124,7 @@ def push_to_supabase(sig: dict, institutional_score: int = 0):
             "tp": float(sig.get("tp", sig.get("tp1", 0.0))),
             "asset_type": asset_type,
             "status": "PENDING",
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(UTC).isoformat()
         }
         
         try:
@@ -140,7 +149,7 @@ def record_pro_trader_history(sig: dict, score: int, feedback: dict | str):
             "entry_price": float(sig["current_price"]),
             "institutional_score": score,
             "feedback": str(feedback),
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(UTC).isoformat()
         }
         supabase.table("pro_trader_history").insert(history_payload).execute()
         log.info(f"Pro-trader history recorded for {sig['symbol']} in Supabase.")
@@ -153,7 +162,7 @@ def push_candles_to_supabase(sig: dict):
     try:
         candle_payload = {
             "symbol": sig["symbol"],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "open": float(sig.get("open", sig["current_price"])),
             "high": float(sig.get("high", sig["current_price"])),
             "low": float(sig.get("low", sig["current_price"])),

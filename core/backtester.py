@@ -1,6 +1,7 @@
 import pandas as pd
-import numpy as np
+
 from core.strategy import StrategyEngine
+
 
 class Backtester:
     def __init__(self, initial_balance: float = 10000.0, risk_per_trade: float = 0.01):
