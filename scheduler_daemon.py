@@ -6,8 +6,10 @@ import schedule
 
 from core.logger import setup_system_logger
 from core.notifier import TelegramNotifier
-from run_live_engine import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, run_trading_cycle
-
+from run_live_engine import run_trading_cycle
+from core.config import Config
+TELEGRAM_BOT_TOKEN = Config.TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = Config.TELEGRAM_CHAT_ID
 log = setup_system_logger("Daemon")
 notifier = TelegramNotifier(bot_token=TELEGRAM_BOT_TOKEN, chat_id=TELEGRAM_CHAT_ID)
 

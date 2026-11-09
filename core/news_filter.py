@@ -7,7 +7,7 @@ from core.logger import setup_system_logger
 log = setup_system_logger("NewsFilter")
 
 class EconomicCalendarShield:
-    def __init__(self, blacklisted_currencies: list[str] = None, buffer_minutes: int = 30):
+    def __init__(self, blacklisted_currencies: list[str] | None = None, buffer_minutes: int = 30):
         """
         :param blacklisted_currencies: Currencies to monitor (e.g. ['USD', 'EUR', 'GBP'])
         :param buffer_minutes: Minutes before and after high-impact news to freeze entries

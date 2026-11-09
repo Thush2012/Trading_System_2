@@ -16,9 +16,9 @@ from core.scanner import MultiTimeframeScanner
 log = setup_system_logger("LiveEngine")
 
 # Memory caches to avoid duplicate Telegram notifications
-NOTIFIED_DEALS = set()
-NOTIFIED_SURGES = set()
-LAST_ALERTED_OPPORTUNITIES = {}
+NOTIFIED_DEALS: set[int] = set()
+NOTIFIED_SURGES: set[str] = set()
+LAST_ALERTED_OPPORTUNITIES: dict[str, float] = {}
 
 def audit_unrealized_profit_surges(notifier: TelegramNotifier):
     """Monitors active open positions and pushes an alert when a trade spikes into big profit."""
