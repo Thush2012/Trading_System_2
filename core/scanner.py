@@ -150,3 +150,4 @@ class MemoryGuardMock:
         self.state = {"in_recovery": False, "deficit_usd": 0.0}
 
 memory_guard = MemoryGuardMock()
+MultiTimeframeScanner = LightweightScanner
