@@ -102,3 +102,5 @@ class Backtester:
         }
 
         return summary, trades_df
+    # At the bottom of core/backtester.py:
+BacktestEngine = Backtester

@@ -130,15 +130,15 @@ with tab2:
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Final Balance", f"${summary['final_balance']:,.2f}")
-            m2.metric("Total Return", f"{summary['total_return_pct']:.2f}%")
-            m3.metric("Win Rate", f"{summary['win_rate_pct']:.1f}%")
-            m4.metric("Profit Factor", f"{summary['profit_factor']:.2f}")
+        m2.metric("Total Return", f"${summary['total_return_pct']:,.2f}%")
+        m3.metric("Win Rate", f"{summary['win_rate_pct']:.1f}%")
+        m4.metric("Profit Factor", f"{summary['profit_factor']:.2f}")
 
-            if not trades_df.empty:
-                st.line_chart(trades_df.set_index("exit_time")["balance"], title="Portfolio Growth Curve")
-                st.dataframe(trades_df, use_container_width=True)
-            else:
-                st.info("No executed trades triggered within this backtest slice.")
+        if not trades_df.empty:
+            chart_data = trades_df.set_index("exit_time")["balance"]
+            st.line_chart(chart_data)
+        else:
+            st.info("No executed trades triggered within this backtest.")
 
 # Client-side auto-reload every 60 seconds
 st.components.v1.html(

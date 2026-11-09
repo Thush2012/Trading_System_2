@@ -219,7 +219,7 @@ def run_executor():
 class ExecutionEngine:
     """Compatibility wrapper class for live engine and type checking imports."""
     @staticmethod
-    def run():
+    def run() -> None:
         run_executor()
 
 if __name__ == "__main__":

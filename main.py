@@ -93,7 +93,7 @@ def evaluate_institutional_confluence(sig: dict) -> tuple[int, dict]:
     else:
         delta_ratio = 0.0
         
-    details['delta_ratio'] = round(delta_ratio, 3)
+    details['delta_ratio'] = str(round(delta_ratio, 3))
     if abs(delta_ratio) >= 0.15:
         score += 1
         details['order_flow'] = 'INSTITUTIONAL_DELTA_CONFIRMED'

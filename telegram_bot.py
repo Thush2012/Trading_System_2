@@ -129,12 +129,12 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_Tap buttons below for quick actions._"
     )
     
-    await update.message.photo(
-        photo=InputFile(chart_buf, filename="dashboard.png"),
-        caption=dashboard_caption,
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
-    )
+    await update.message.reply_photo(
+    photo=chart_buf,
+    caption=dashboard_caption,
+    parse_mode="Markdown",
+    reply_markup=get_main_keyboard()
+)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -146,7 +146,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
     if data.startswith("exec_"):
         sym = data.split("_")[1]
-        await query.edit_message_text(text=f"✅ *Signal for {sym} accepted!* Please place manually in your terminal.", parse_Mode="Markdown")
+        await query.edit_message_text(text=f"✅ *Signal for {sym} accepted!* Please place manually in your terminal.", parse_mode="Markdown")
     elif data.startswith("reject_"):
         sym = data.split("_")[1]
         await query.edit_message_text(text=f"❌ *Signal for {sym} dismissed.*", parse_mode="Markdown")
