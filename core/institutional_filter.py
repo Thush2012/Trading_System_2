@@ -1,8 +1,7 @@
 from datetime import UTC, datetime
-
+from typing import Any, Optional  # <--- Make sure these are imported
 import pandas as pd
 import yfinance as yf
-
 from core.logger import setup_system_logger
 from core.pro_tracker import ProTraderTracker
 
@@ -60,26 +59,59 @@ class InstitutionalFilterEngine:
             return False, "Pro Filter: Conflict with professional trader short consensus."
         return True, "Passed Pro Alignment"
 
-    def evaluate_institutional_confluence(self, symbol: str, direction: str, df_base: pd.DataFrame) -> tuple[bool, str, dict]:
+    def validate_institutional_signal(self, row: dict) -> tuple[bool, str]:
+        """
+        Enforces strict institutional filters:
+        - Minimum ADX > 25.0 for strong directional momentum.
+        - 1H and 4H trend alignment (no counter-trend entries).
+        """
+        adx = float(row.get("adx", 26.0))
+        if adx < 25.0:
+            return False, f"REJECTED_LOW_ADX ({adx:.1f} < 25.0)"
+
+        trend_1h = str(row.get("trend_1h", "BULLISH")).upper()
+        trend_4h = str(row.get("trend_4h", "BULLISH")).upper()
+        action = str(row.get("action", "")).upper()
+
+        if "BUY" in action:
+            if trend_1h != "BULLISH" or trend_4h != "BULLISH":
+                return False, f"REJECTED_TREND_MISMATCH (1H: {trend_1h}, 4H: {trend_4h} for BUY)"
+        elif "SELL" in action:
+            if trend_1h != "BEARISH" or trend_4h != "BEARISH":
+                return False, f"REJECTED_TREND_MISMATCH (1H: {trend_1h}, 4H: {trend_4h} for SELL)"
+
+        return True, "PASSED_INSTITUTIONAL_FILTERS"
+
+    def evaluate_institutional_confluence(
+        self, 
+        symbol: str, 
+        direction: str, 
+        df_base: pd.DataFrame, 
+        row_data: dict[str, Any] | None = None  # <--- Uses | None instead of Optional
+    ) -> tuple[bool, str, dict]:    
         news_ok, news_reason = self.check_news_sentiment_guard()
         if not news_ok:
             return False, news_reason, {}
-
+        
         regime = self.check_volatility_regime(df_base)
         if regime == "LOW_VOLATILITY_CHOP":
             return False, "Blocked by Low Volatility Chop Regime", {}
-
+            
         corr_passed, corr_reason = self.check_intermarket_correlation(symbol, direction)
         if not corr_passed:
             return False, corr_reason, {}
-
+            
         pro_ok, pro_reason = self.check_pro_alignment(symbol, direction)
         if not pro_ok:
             return False, pro_reason, {}
 
+        if row_data:
+            sig_ok, sig_reason = self.validate_institutional_signal(row_data)
+            if not sig_ok:
+                return False, sig_reason, {}
+
         current_month = datetime.now(UTC).month
         season_multiplier = self.seasonal_bias.get(symbol, {}).get(current_month, 1.0)
-
         meta = {
             "volatility_regime": regime,
             "seasonal_multiplier": season_multiplier
