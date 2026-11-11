@@ -38,10 +38,12 @@ LOCAL_TZ = pytz.timezone("Asia/Colombo")
 risk_mgr = RiskManager()
 highest_prices_tracker: dict[str, float] = {}
 
-def is_execution_window_active() -> tuple[bool, str]:
+def is_execution_window_active(asset_type: str = "FOREX") -> tuple[bool, str]:
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 and asset_type != "CRYPTO":
         return False, "Weekend Standby (Saturday/Sunday)."
+    if asset_type == "CRYPTO":
+        return True, "24/7 Crypto Window Active"
     return True, "24/5 Window Active"
 
 def check_daily_pnl_limits() -> tuple[bool, str, float]:
@@ -156,17 +158,15 @@ def manage_active_mt5_positions_with_trailing_stop():
             current_price = tick.bid if is_buy else tick.ask
             sym_info = mt5.symbol_info(symbol)
             digits = sym_info.digits if sym_info else 5
-
-            # Track peak price favoring movement
+            
             peak = highest_prices_tracker.get(symbol, entry)
             if is_buy:
                 if current_price > peak:
                     peak = current_price
                     highest_prices_tracker[symbol] = peak
                 profit_pct = (current_price - entry) / entry
-                # Activate trailing when profit exceeds 0.6%
                 if profit_pct >= 0.006:
-                    new_sl = peak * (0.995)  # 0.5% trail behind peak
+                    new_sl = peak * (0.995)  
                     if new_sl > sl and new_sl < current_price:
                         request = {"action": mt5.TRADE_ACTION_SLTP, "symbol": symbol, "position": ticket, "sl": round(new_sl, digits), "tp": round(tp, digits)}
                         result = mt5.order_send(request)
@@ -197,7 +197,7 @@ def manage_active_crypto_positions_with_trailing_stop(exchanges_dict: dict):
                     continue
                 symbol = pos['symbol']
                 entry_price = float(pos['entryPrice'])
-                side = pos['side']  # 'long' or 'short'
+                side = pos['side']  
                 mark_price = float(pos.get('markPrice', entry_price))
                 
                 profit_pct = (mark_price - entry_price) / entry_price if side == 'long' else (entry_price - mark_price) / entry_price
@@ -205,7 +205,7 @@ def manage_active_crypto_positions_with_trailing_stop(exchanges_dict: dict):
                 if profit_pct >= 0.006:
                     open_orders = exchange.fetch_open_orders(symbol)
                     stop_orders = [o for o in open_orders if o['type'] in ['stop_market', 'stop']]
-                    new_sl = entry_price  # Lock break-even initially upon threshold
+                    new_sl = entry_price  
                     for so in stop_orders:
                         trigger_price = float(so.get('triggerPrice', so.get('stopPrice', 0)))
                         if side == 'long' and trigger_price < entry_price:
@@ -245,18 +245,37 @@ def generate_and_send_eod_reports(exchanges_dict: dict):
     log.info("================================================================")
 
 def execute_crypto_order(exchanges_dict, sig: dict):
-    allowed, window_msg = is_execution_window_active()
+    allowed, window_msg = is_execution_window_active(asset_type="CRYPTO")
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
+        
     target_exchange = sig.get("exchange", "BINANCE").upper()
     exchange = exchanges_dict.get(target_exchange)
     if not exchange:
         return False, f"EXCHANGE_{target_exchange}_NOT_CONNECTED"
     
     try:
-        symbol_raw = sig["symbol"]
-        symbol_ccxt = symbol_raw if "/" in symbol_raw else f"{symbol_raw[:-4]}/{symbol_raw[-4:]}"
+        symbol_raw = sig["symbol"].upper()
         
+        # Robust CCXT Symbol Formatting (e.g. ETHUSDT -> ETH/USDT:USDT or ETH/USDT)
+        if "/" in symbol_raw:
+            symbol_ccxt = symbol_raw
+        else:
+            if symbol_raw.endswith("USDT"):
+                base = symbol_raw[:-4]
+                symbol_ccxt = f"{base}/USDT:USDT" if target_exchange == "BINANCE" else f"{base}/USDT"
+            else:
+                symbol_ccxt = f"{symbol_raw}/USDT"
+
+        # Verify symbol exists in loaded CCXT markets, fallback if necessary
+        if symbol_ccxt not in exchange.markets:
+            alt_symbol = f"{symbol_raw[:-4]}/USDT" if symbol_raw.endswith("USDT") else f"{symbol_raw}/USDT"
+            if alt_symbol in exchange.markets:
+                symbol_ccxt = alt_symbol
+            else:
+                log.error(f"[{target_exchange}] Symbol {symbol_ccxt} not found in exchange markets.")
+                return False, f"SYMBOL_NOT_FOUND_CCXT_{symbol_ccxt}"
+
         # Cooldown check
         on_cd, cd_msg = risk_mgr.is_symbol_on_cooldown(symbol_raw)
         if on_cd:
@@ -288,11 +307,11 @@ def execute_crypto_order(exchanges_dict, sig: dict):
         exchange.create_order(symbol=symbol_ccxt, type='take_profit_market', side=close_side, amount=CRYPTO_QTY, params=tp_params)
         return True, order_id
     except Exception as e:
-        log.error(f"[{target_exchange}] Crypto order error: {e}")
+        log.error(f"[{target_exchange}] Crypto order error for {sig.get('symbol')}: {e}")
         return False, str(e)
 
 def execute_forex_order(sig: dict):
-    allowed, window_msg = is_execution_window_active()
+    allowed, window_msg = is_execution_window_active(asset_type="FOREX")
     if not allowed:
         return False, f"WINDOW_LOCK: {window_msg}"
     pnl_allowed, pnl_reason, _ = check_daily_pnl_limits()
@@ -379,8 +398,9 @@ def run_dual_executor():
         try:
             now = datetime.now(LOCAL_TZ)
             if now.weekday() >= 5:
-                time.sleep(60)
-                continue
+                # Keep loop alive for 24/7 crypto even on weekends if desired, 
+                # or sleep if market is closed. For crypto, let's allow it to pass through.
+                pass
                 
             utc_now = datetime.now(UTC)
             if utc_now.hour == 23 and utc_now.minute == 59 and not eod_reported_today:
